@@ -155,6 +155,21 @@ class CircuitGraph:
         # Build the bipartite graph
         self._build_graph()
 
+    def _fix_encoding(self, text: str) -> str:
+        """Fix common encoding issues in component values.
+
+        Args:
+            text: Text with potential encoding issues
+
+        Returns:
+            Fixed text with proper Unicode symbols
+        """
+        # Fix ohm symbol
+        text = text.replace('Î©', 'Ω')
+        # Fix mu (micro) symbol
+        text = text.replace('Âµ', 'µ')
+        return text
+
     def _extract_netlist(self, parsed) -> Netlist:
         """Extract clean netlist data from kinparse result.
 
@@ -174,7 +189,7 @@ class CircuitGraph:
 
                 if len(part_list) >= 3:
                     ref = str(part_list[0])
-                    value = str(part_list[1])
+                    value = self._fix_encoding(str(part_list[1]))
                     footprint = str(part_list[2]) if len(part_list) > 2 else ""
                     datasheet = str(part_list[3]) if len(part_list) > 3 else ""
 
@@ -337,6 +352,11 @@ class CircuitGraph:
 
         return categories.get(prefix, 'Other')
 
+    def _is_passive_component(self, reference: str) -> bool:
+        """Determine if a component is passive (R, C, L, D, FB)."""
+        prefix = ''.join(c for c in reference if c.isalpha())
+        return prefix in ('R', 'C', 'L', 'D', 'FB')
+
     # Query methods
     def get_component(self, reference: str) -> Optional[Dict[str, Any]]:
         """Get component data by reference designator."""
@@ -495,7 +515,7 @@ class CircuitGraph:
             ])
             for net_name, count in stats['largest_nets'][:5]:
                 components = self.get_components_on_net(net_name)[:3]
-                comp_str = ', '.join([f"{ref}:{pin}" for ref, pin, _ in components])
+                comp_str = ', '.join([ref for ref, _, _ in components])
                 if len(components) < len(self.get_components_on_net(net_name)):
                     comp_str += f", ... ({count} total)"
                 lines.append(f"- **{net_name}**: {comp_str}")
@@ -524,10 +544,10 @@ class CircuitGraph:
                 f"## Main ICs:"
             ])
             for ref, value in sorted(ics)[:10]:
-                nets = self.get_nets_of_component(ref)[:5]
+                nets = self.get_nets_of_component(ref)
                 lines.append(f"- **{ref}**: {value}")
                 if nets:
-                    lines.append(f"  Nets: {', '.join(nets)}")
+                    lines.append(f"  Nets: {len(nets)}")
 
         # Show connectors
         connectors = []

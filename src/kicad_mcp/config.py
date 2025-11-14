@@ -127,6 +127,21 @@ class KiCadMCPConfig:
 
         return Path(board_info['path']).expanduser()
 
+    def get_board_ignore_list(self, board_name: str) -> List[str]:
+        """Get the list of components to ignore for a board.
+
+        Args:
+            board_name: Board identifier from config
+
+        Returns:
+            List of component references to ignore, empty list if none
+        """
+        board_info = self.config.get('boards', {}).get(board_name)
+        if not board_info:
+            return []
+
+        return board_info.get('ignore', [])
+
     def load_board(self, board_name: str, force_reload: bool = False) -> Optional[CircuitGraph]:
         """Load a board by name, using cache if available.
 
@@ -202,8 +217,9 @@ class KiCadMCPConfig:
 
         for board_name in board_names:
             board_path = self.get_board_path(board_name)
+            ignore_list = self.get_board_ignore_list(board_name)
             if board_path and board_path.exists():
-                multi.add_board(board_name, board_path)
+                multi.add_board(board_name, board_path, ignore_list=ignore_list)
             else:
                 print(f"Warning: Board '{board_name}' not found, skipping")
 

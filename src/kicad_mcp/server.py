@@ -64,6 +64,28 @@ class KiCadMCPServer:
                     }
                 ),
                 types.Tool(
+                    name="search_components",
+                    description="Search for components by field value (e.g., value, manufacturer, footprint)",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
+                            },
+                            "field": {
+                                "type": "string",
+                                "description": "Field to search (e.g., 'value', 'footprint', 'Manufacturer', 'MPN')"
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Search query (supports partial matching, case-insensitive)"
+                            }
+                        },
+                        "required": ["source", "field", "query"]
+                    }
+                ),
+                types.Tool(
                     name="list_nets",
                     description="List all nets in the schematic",
                     inputSchema={
@@ -396,10 +418,50 @@ class KiCadMCPServer:
                     for ref, comp in circuit.netlist.components.items():
                         comp_cat = circuit._get_component_category(ref)
                         if not category or comp_cat == category:
-                            components.append(f"- **{ref}**: {comp.value} ({comp_cat})")
+                            # For passive components, show connected nets
+                            if circuit._is_passive_component(ref):
+                                nets = circuit.get_nets_of_component(ref)
+                                nets_str = f" [{', '.join(nets)}]" if nets else ""
+                                components.append(f"- **{ref}**: {comp.value}{nets_str}")
+                            else:
+                                components.append(f"- **{ref}**: {comp.value}")
 
                     result = f"# Components {'(' + category + ')' if category else ''}\n\n"
                     result += '\n'.join(components) if components else "No components found"
+
+                elif name == "search_components":
+                    field = arguments.get("field").lower()
+                    query = arguments.get("query").lower()
+                    matches = []
+
+                    for ref, comp in circuit.netlist.components.items():
+                        # Search in standard fields
+                        if field == "value":
+                            search_value = comp.value.lower()
+                        elif field == "footprint":
+                            search_value = comp.footprint.lower()
+                        elif field == "reference":
+                            search_value = ref.lower()
+                        else:
+                            # Search in custom fields
+                            search_value = comp.fields.get(field, "").lower()
+
+                        # Partial match
+                        if query in search_value:
+                            # Format output similar to list_components
+                            if circuit._is_passive_component(ref):
+                                nets = circuit.get_nets_of_component(ref)
+                                nets_str = f" [{', '.join(nets)}]" if nets else ""
+                                matches.append(f"- **{ref}**: {comp.value}{nets_str}")
+                            else:
+                                matches.append(f"- **{ref}**: {comp.value}")
+
+                    result = f"# Component Search: {field} = '{arguments.get('query')}'\n\n"
+                    if matches:
+                        result += f"Found {len(matches)} matches:\n\n"
+                        result += '\n'.join(matches)
+                    else:
+                        result += "No components found"
 
                 elif name == "list_nets":
                     power_only = arguments.get("power_only", False)
@@ -426,14 +488,14 @@ class KiCadMCPServer:
                         # Show connected nets
                         nets = circuit.get_nets_of_component(reference)
                         result += f"## Connected Nets ({len(nets)})\n\n"
-                        for net in nets[:20]:  # Limit to 20
+                        for net in nets:
                             result += f"- {net}\n"
 
                         # Show pins
                         pins = comp_data.get('pins', {})
                         if pins:
                             result += f"\n## Pins ({len(pins)})\n\n"
-                            for pin_num, pin_name in list(pins.items())[:20]:
+                            for pin_num, pin_name in pins.items():
                                 net = circuit.get_pin_net(reference, pin_num)
                                 result += f"- Pin {pin_num} ({pin_name}): {net or 'NC'}\n"
                     else:
@@ -450,8 +512,25 @@ class KiCadMCPServer:
                         result += f"**Component types:** {', '.join(net_details['component_types'])}\n\n"
 
                         result += "## Connected Components\n\n"
-                        for ref, pin, name in net_details['components'][:30]:
-                            result += f"- {ref}:{pin} ({name})\n"
+                        for ref, pin, pin_name in net_details['components']:
+                            comp = circuit.netlist.components.get(ref)
+
+                            # Format based on component type
+                            if ref.startswith('#'):
+                                # Power symbol - just show reference
+                                result += f"- {ref}\n"
+                            elif comp and circuit._is_passive_component(ref):
+                                # Passive - show value and other net
+                                nets = circuit.get_nets_of_component(ref)
+                                other_nets = [n for n in nets if n != net_name]
+                                other_net_str = f" → [{', '.join(other_nets)}]" if other_nets else ""
+                                result += f"- **{ref}**: {comp.value}{other_net_str}\n"
+                            elif ref.startswith('J') or ref.startswith('CN') or ref.startswith('P'):
+                                # Connector - show ref:pin
+                                result += f"- {ref}:{pin}\n"
+                            else:
+                                # IC or other component - show ref (pin_name)
+                                result += f"- {ref} ({pin_name})\n"
                     else:
                         result = f"Net {net_name} not found"
 
@@ -566,18 +645,38 @@ class KiCadMCPServer:
                         path = system.trace_signal_path(signal_net, start_comp, end_comp)
                         if path:
                             result = f"# Signal Path: {signal_net}\n\n"
-                            for node in path:
+                            prev_board = None
+                            for i, node in enumerate(path):
                                 if ':' in str(node):
+                                    # Component node
                                     board, ref = node.split(':', 1)
                                     comp = system.boards[board].netlist.components.get(ref)
                                     value = comp.value if comp else 'unknown'
-                                    result += f"- **{node}** ({value})\n"
+
+                                    # Add arrow if not first component
+                                    if i > 0:
+                                        result += "  ↓\n"
+
+                                    # For passive components, show the "other" net (not the signal being traced)
+                                    other_net_str = ""
+                                    if system.boards[board]._is_passive_component(ref):
+                                        nets = system.boards[board].get_nets_of_component(ref)
+                                        # Filter out the signal net we're tracing
+                                        # The signal_net might be just the net name or board:net_name
+                                        base_signal_net = signal_net.split(':')[-1] if ':' in signal_net else signal_net
+                                        other_nets = [n for n in nets if n != base_signal_net]
+                                        if other_nets:
+                                            other_net_str = f" → [{', '.join(other_nets)}]"
+
+                                    result += f"**{node}** ({value}){other_net_str}\n"
+                                    prev_board = board
                                 else:
+                                    # Net node (board transition)
                                     boards = system.get_connected_boards(node)
                                     if len(boards) > 1:
-                                        result += f"- → {node} [crosses: {' ↔ '.join(boards)}]\n"
+                                        result += f"  → {node} [crosses: {' ↔ '.join(boards)}]\n"
                                     else:
-                                        result += f"- → {node}\n"
+                                        result += f"  → {node}\n"
                         else:
                             result = f"No path found for signal {signal_net}"
 
