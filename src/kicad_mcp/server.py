@@ -11,6 +11,7 @@ import mcp.types as types
 from .circuit_graph_netlist import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
+from .datasheet_lookup import DatasheetFinder
 
 
 class KiCadMCPServer:
@@ -22,6 +23,7 @@ class KiCadMCPServer:
         self.config = KiCadMCPConfig()  # Load configuration
         self.circuits: Dict[str, CircuitGraph] = {}  # Cache loaded circuits
         self.systems: Dict[str, MultiBoardGraph] = {}  # Cache loaded systems
+        self.datasheet_finder = DatasheetFinder(self.config.cache_dir)  # Datasheet lookup
         self.setup_handlers()
 
     def setup_handlers(self) -> None:
@@ -208,6 +210,29 @@ class KiCadMCPServer:
                     }
                 ),
                 types.Tool(
+                    name="search_datasheet",
+                    description="Search for component datasheet URL using manufacturer and part number",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "manufacturer": {
+                                "type": "string",
+                                "description": "Component manufacturer (e.g., 'Texas Instruments', 'STMicroelectronics')"
+                            },
+                            "part_number": {
+                                "type": "string",
+                                "description": "Component part number (e.g., 'ADS1299IPAGR', 'STM32F4')"
+                            },
+                            "force_refresh": {
+                                "type": "boolean",
+                                "description": "Force new search even if cached result exists",
+                                "default": False
+                            }
+                        },
+                        "required": ["manufacturer", "part_number"]
+                    }
+                ),
+                types.Tool(
                     name="list_configured_boards",
                     description="List all boards configured in .kicad_mcp.yaml",
                     inputSchema={
@@ -391,7 +416,7 @@ class KiCadMCPServer:
             if not source and name not in ["list_configured_boards", "list_configured_systems",
                                            "load_board", "load_system", "trace_cross_board_signal",
                                            "get_system_overview", "reload_config", "add_board",
-                                           "remove_board", "add_system", "remove_system"]:
+                                           "remove_board", "add_system", "remove_system", "search_datasheet"]:
                 return [types.TextContent(
                     type="text",
                     text="Error: source parameter is required"
@@ -584,6 +609,37 @@ class KiCadMCPServer:
                                     result += f"- {ref}:{pin} ({name})\n"
                     else:
                         result += "**Not connected**"
+
+                elif name == "search_datasheet":
+                    manufacturer = arguments.get("manufacturer", "")
+                    part_number = arguments.get("part_number", "")
+                    force_refresh = arguments.get("force_refresh", False)
+
+                    if not manufacturer or not part_number:
+                        result = "Error: Both manufacturer and part_number are required"
+                    else:
+                        result = f"# Datasheet Search: {part_number}\n\n"
+                        result += f"**Manufacturer:** {manufacturer}\n"
+                        result += f"**Part Number:** {part_number}\n\n"
+
+                        try:
+                            url = self.datasheet_finder.find_datasheet(
+                                manufacturer,
+                                part_number,
+                                use_cache=not force_refresh
+                            )
+
+                            if url:
+                                result += f"**Datasheet URL:** {url}\n"
+                                if force_refresh:
+                                    result += "\n*(Result refreshed and cached)*"
+                                else:
+                                    result += "\n*(Result may be from cache)*"
+                            else:
+                                result += "**Status:** No datasheet found\n\n"
+                                result += "Try searching directly or check manufacturer/part number spelling."
+                        except Exception as e:
+                            result += f"**Error:** Search failed: {str(e)}"
 
                 elif name == "list_configured_boards":
                     boards = self.config.list_boards()

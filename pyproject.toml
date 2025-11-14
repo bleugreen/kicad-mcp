@@ -32,6 +32,7 @@ dependencies = [
     "kicad-sch-api>=0.5.4",
     "kinparse>=1.2.4",
     "pyyaml>=6.0",
+    "ddgs>=0.1.0",
 ]
 
 [project.optional-dependencies]
