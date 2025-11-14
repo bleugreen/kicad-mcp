@@ -508,7 +508,57 @@ class KiCadMCPServer:
                         result = f"# Component: {reference}\n\n"
                         result += f"**Value:** {comp_data.get('value')}\n"
                         result += f"**Category:** {comp_data.get('category')}\n"
-                        result += f"**Footprint:** {comp_data.get('footprint', 'N/A')}\n\n"
+                        result += f"**Footprint:** {comp_data.get('footprint', 'N/A')}\n"
+
+                        # Try to get/show datasheet URL for non-passives
+                        datasheet_url = None
+                        comp_obj = circuit.netlist.components.get(reference)
+
+                        if comp_obj and not circuit._is_passive_component(reference):
+                            # First check if datasheet field is already populated with a PDF
+                            if (comp_obj.datasheet and
+                                comp_obj.datasheet not in ['~', ''] and
+                                '.pdf' in comp_obj.datasheet.lower()):
+                                datasheet_url = comp_obj.datasheet
+                            else:
+                                # Try to look up using manufacturer and part number from fields
+                                # Different symbol libraries use different field names:
+                                # - LCSC: "Manufacturer" / "Manufacturer Part"
+                                # - Mouser: "Manufacturer_Name" / "Manufacturer_Part_Number"
+                                # - Others: "MFR" / "MPN" / "Part Number"
+                                manufacturer = (
+                                    comp_obj.fields.get('Manufacturer') or
+                                    comp_obj.fields.get('Manufacturer_Name') or
+                                    comp_obj.fields.get('MFR') or
+                                    ''
+                                )
+                                part_number = (
+                                    comp_obj.fields.get('MPN') or
+                                    comp_obj.fields.get('Manufacturer Part') or
+                                    comp_obj.fields.get('Manufacturer_Part_Number') or
+                                    comp_obj.fields.get('Part Number') or
+                                    comp_obj.value
+                                )
+
+                                # Attempt lookup if we have at least a part number
+                                if part_number:
+                                    # Use empty string for manufacturer if not available - search will still work
+                                    if not manufacturer:
+                                        manufacturer = ''
+
+                                    try:
+                                        datasheet_url = self.datasheet_finder.find_datasheet(
+                                            manufacturer,
+                                            part_number,
+                                            use_cache=True
+                                        )
+                                    except Exception:
+                                        pass  # Silently fail if lookup doesn't work
+
+                        if datasheet_url:
+                            result += f"**Datasheet:** {datasheet_url}\n"
+
+                        result += "\n"
 
                         # Show connected nets
                         nets = circuit.get_nets_of_component(reference)

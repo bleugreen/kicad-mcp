@@ -142,7 +142,26 @@ class DatasheetFinder:
         """
         return ".pdf" in url.lower().split("?", 1)[0]
 
-    def _rank_url(self, url: str, part_number: str, mfg_domain: Optional[str]) -> Tuple[int, int]:
+    def _longest_consecutive_match(self, s1: str, s2: str) -> int:
+        """Find the longest consecutive substring that appears in both strings.
+
+        Args:
+            s1: First string
+            s2: Second string
+
+        Returns:
+            Length of longest consecutive match
+        """
+        max_len = 0
+        # Check all substrings of s1
+        for i in range(len(s1)):
+            for j in range(i + 1, len(s1) + 1):
+                substring = s1[i:j]
+                if substring in s2:
+                    max_len = max(max_len, len(substring))
+        return max_len
+
+    def _rank_url(self, url: str, part_number: str, mfg_domain: Optional[str]) -> Tuple[int, int, int]:
         """Rank URL by relevance.
 
         Args:
@@ -151,11 +170,11 @@ class DatasheetFinder:
             mfg_domain: Expected manufacturer domain
 
         Returns:
-            (domain_rank, name_rank) tuple - lower is better
+            (domain_rank, match_rank, doc_type_rank) tuple - lower is better
         """
         host = urlparse(url).netloc.lower()
-        pn_norm = part_number.upper().replace(" ", "").replace("-", "")
-        fname = url.split("/")[-1].upper().replace("-", "").replace("_", "")
+        pn_norm = part_number.upper().replace(" ", "").replace("-", "").replace("_", "")
+        url_upper = url.upper().replace("-", "").replace("_", "")
 
         # Rank by domain
         if mfg_domain and mfg_domain in host:
@@ -165,10 +184,21 @@ class DatasheetFinder:
         else:
             domain_rank = 2  # Other sites
 
-        # Rank by filename match
-        name_rank = 0 if pn_norm in fname else 1
+        # Rank by longest consecutive part number match in URL
+        # Higher match = lower rank (better)
+        match_length = self._longest_consecutive_match(pn_norm, url_upper)
+        match_rank = -match_length  # Negate so longer matches have lower (better) rank
 
-        return (domain_rank, name_rank)
+        # Rank by document type - prefer datasheets over other docs
+        url_lower = url.lower()
+        if '/ds/' in url_lower or 'datasheet' in url_lower:
+            doc_type_rank = 0  # Datasheet paths are best
+        elif any(x in url_lower for x in ['/ug/', '/an/', '/application', '/user']):
+            doc_type_rank = 2  # User guides and app notes are worse
+        else:
+            doc_type_rank = 1  # Unknown is in the middle
+
+        return (domain_rank, match_rank, doc_type_rank)
 
     def find_datasheet(self, manufacturer: str, part_number: str, use_cache: bool = True) -> Optional[str]:
         """Find datasheet URL for a component.
@@ -190,15 +220,30 @@ class DatasheetFinder:
         pn = part_number.strip()
         mfg_domain = self._canon_domain(manufacturer)
 
+        # Extract base part number (remove package/variant codes)
+        # E.g., "ADS1299IPAGR" -> "ADS1299", "STM32F407VGT6" -> "STM32F407"
+        pn_base = pn
+        # Common patterns: try to remove trailing package codes
+        # Look for pattern: letters+numbers, then more letters (package code)
+        import re
+        match = re.match(r'^([A-Z0-9]+?)([A-Z]{2,}[0-9]*)$', pn.upper())
+        if match:
+            pn_base = match.group(1)
+
         # Build search queries with filetype:pdf to get direct PDF links
-        # Use quotes for exact matching
+        # Try both base part number and full part number
         queries = []
 
         # Try with manufacturer domain if known
         if mfg_domain:
+            # Try base part number first (more likely to find datasheet)
+            if pn_base != pn:
+                queries.append(f'"{manufacturer}" "{pn_base}" datasheet filetype:pdf site:{mfg_domain}')
             queries.append(f'"{manufacturer}" "{pn}" datasheet filetype:pdf site:{mfg_domain}')
 
         # Try general searches
+        if pn_base != pn:
+            queries.append(f'"{manufacturer}" "{pn_base}" datasheet filetype:pdf')
         queries.append(f'"{manufacturer}" "{pn}" datasheet filetype:pdf')
         queries.append(f'"{pn}" datasheet filetype:pdf')
 

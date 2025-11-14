@@ -299,15 +299,35 @@ class MultiBoardGraph:
         """Find all nets that connect multiple boards.
 
         Returns:
-            Dict mapping net names to list of connected boards
+            Dict mapping base net names to list of connected boards
         """
-        cross_board = {}
+        # Group board-specific nets by their base net name
+        base_net_to_boards: Dict[str, Set[str]] = {}
 
-        for node, data in self.unified_graph.nodes(data=True):
-            if data.get('type') == 'net':
-                boards = data.get('boards', set())
-                if len(boards) > 1:
-                    cross_board[node] = sorted(list(boards))
+        # Find all nets with cross_board edges
+        visited_nets = set()
+        for u, v, edge_data in self.unified_graph.edges(data=True):
+            if edge_data.get('type') == 'cross_board':
+                # Both u and v are net nodes from different boards
+                for net_node in [u, v]:
+                    if net_node in visited_nets:
+                        continue
+                    visited_nets.add(net_node)
+
+                    node_data = self.unified_graph.nodes[net_node]
+                    if node_data.get('type') == 'net':
+                        base_net = node_data.get('base_net', net_node)
+                        board = node_data.get('board', 'unknown')
+
+                        if base_net not in base_net_to_boards:
+                            base_net_to_boards[base_net] = set()
+                        base_net_to_boards[base_net].add(board)
+
+        # Convert to desired format - only include nets shared by multiple boards
+        cross_board = {}
+        for base_net, boards in base_net_to_boards.items():
+            if len(boards) > 1:
+                cross_board[base_net] = sorted(list(boards))
 
         return cross_board
 
@@ -604,7 +624,7 @@ class MultiBoardGraph:
         power_nets = []
         signal_nets = []
 
-        for net, boards in sorted(cross_board.items())[:20]:  # Limit to 20
+        for net, boards in sorted(cross_board.items()):
             boards_str = ' ↔ '.join(boards)
             if any(kw in net.upper() for kw in ['VDD', 'VCC', 'GND', '3V', '5V', '+', '-']):
                 power_nets.append(f"- **{net}**: {boards_str}")
