@@ -89,7 +89,9 @@ def test_focus_argument_validation_returns_clean_error() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_focus", {}))
 
-    assert getattr(result[0], "text") == "Error: Pass exactly one of reference or position"
+    assert (
+        getattr(result[0], "text") == "Error: Pass exactly one of reference or position"
+    )
 
 
 def test_box_contains_kipy_style_pos_size_box() -> None:
