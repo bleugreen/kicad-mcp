@@ -71,7 +71,10 @@ class KiCadIPC:
         kicad = self._connect()
         document_type = self._document_type()
         version = kicad.get_version()
-        boards = [self._document_info(doc) for doc in kicad.get_open_documents(document_type.DOCTYPE_PCB)]
+        boards = [
+            self._document_info(doc)
+            for doc in kicad.get_open_documents(document_type.DOCTYPE_PCB)
+        ]
         return {
             "reachable": True,
             "version": getattr(version, "full_version", str(version)),
@@ -79,7 +82,9 @@ class KiCadIPC:
             "boards": boards,
         }
 
-    def focus(self, *, reference: str | None = None, position: dict[str, Any] | None = None) -> dict[str, Any]:
+    def focus(
+        self, *, reference: str | None = None, position: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Select a footprint or item at a position in the live PCB editor.
 
         KiCad 9's Python IPC surface exposes selection but not a typed view-pan or
@@ -93,7 +98,9 @@ class KiCadIPC:
         if reference:
             item = self._find_footprint(board, reference)
             if item is None:
-                raise ValueError(f"Footprint '{reference}' was not found in the live board")
+                raise ValueError(
+                    f"Footprint '{reference}' was not found in the live board"
+                )
             selected = self._replace_selection(board, [item])
             return {
                 "action": "focus_reference",
@@ -129,7 +136,9 @@ class KiCadIPC:
 
         items = list(board.get_items_by_net(net_obj, types=self._copper_item_types()))
         if not items:
-            raise ValueError(f"Net '{net}' has no selectable copper items in the live board")
+            raise ValueError(
+                f"Net '{net}' has no selectable copper items in the live board"
+            )
 
         selected = self._replace_selection(board, items)
         summary = self.selection_summary(selected)
@@ -148,7 +157,9 @@ class KiCadIPC:
 
     def selection_summary(self, items: Sequence[Any]) -> dict[str, Any]:
         normalized = [self._item_summary(item) for item in items]
-        references = sorted({item["reference"] for item in normalized if item.get("reference")})
+        references = sorted(
+            {item["reference"] for item in normalized if item.get("reference")}
+        )
         nets = sorted({net for item in normalized for net in item.get("nets", [])})
         type_counts: dict[str, int] = {}
         for item in normalized:
@@ -183,7 +194,9 @@ class KiCadIPC:
             from kipy.errors import ConnectionError as KiCadConnectionError
             from kipy.kicad import KiCad
         except ImportError as exc:  # pragma: no cover - dependency is declared
-            raise KiCadIPCError("kicad-python is not installed; install the kicad-python package") from exc
+            raise KiCadIPCError(
+                "kicad-python is not installed; install the kicad-python package"
+            ) from exc
 
         socket_path = self._default_socket_path()
         try:
@@ -210,7 +223,9 @@ class KiCadIPC:
         try:
             return kicad.get_board()
         except Exception as exc:
-            raise KiCadIPCError(f"KiCad is reachable but no PCB board document is open: {exc}") from exc
+            raise KiCadIPCError(
+                f"KiCad is reachable but no PCB board document is open: {exc}"
+            ) from exc
 
     def _default_socket_path(self) -> str:
         try:
@@ -251,7 +266,9 @@ class KiCadIPC:
     @staticmethod
     def _find_net(board: Any, net_name: str) -> Any | None:
         for net in board.get_nets():
-            if getattr(net, "name", None) == net_name or str(getattr(net, "code", "")) == str(net_name):
+            if getattr(net, "name", None) == net_name or str(
+                getattr(net, "code", "")
+            ) == str(net_name):
                 return net
         return None
 
@@ -274,7 +291,11 @@ class KiCadIPC:
         from kipy.geometry import Vector2
 
         target = Vector2.from_xy_mm(x_mm, y_mm)
-        candidates = list(board.get_items(KiCadIPC._copper_item_types() + [KiCadIPC._footprint_type()]))
+        candidates = list(
+            board.get_items(
+                KiCadIPC._copper_item_types() + [KiCadIPC._footprint_type()]
+            )
+        )
         for item in candidates:
             bbox = board.get_item_bounding_box(item, include_text=True)
             if _box_contains(bbox, target.x, target.y):
@@ -384,7 +405,11 @@ def _box_contains(box: Any, x_nm: int, y_nm: int) -> bool:
 
 
 def format_session(data: dict[str, Any]) -> str:
-    lines = ["# Live KiCad Session", "", f"**Reachable:** {data.get('reachable', False)}"]
+    lines = [
+        "# Live KiCad Session",
+        "",
+        f"**Reachable:** {data.get('reachable', False)}",
+    ]
     if data.get("version"):
         lines.append(f"**KiCad version:** {data['version']}")
     if data.get("api_socket"):
@@ -397,7 +422,9 @@ def format_session(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_selection(data: dict[str, Any], *, title: str = "Live KiCad Selection") -> str:
+def format_selection(
+    data: dict[str, Any], *, title: str = "Live KiCad Selection"
+) -> str:
     lines = [f"# {title}", "", f"**Items:** {data.get('count', 0)}"]
     references = data.get("references") or []
     nets = data.get("nets") or []

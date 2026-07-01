@@ -87,7 +87,9 @@ def test_focus_argument_validation_returns_clean_error():
 
 
 def test_box_contains_kipy_style_pos_size_box():
-    box = SimpleNamespace(pos=FakeVector(1_000_000, 2_000_000), size=FakeVector(3_000_000, 4_000_000))
+    box = SimpleNamespace(
+        pos=FakeVector(1_000_000, 2_000_000), size=FakeVector(3_000_000, 4_000_000)
+    )
 
     assert _box_contains(box, 2_000_000, 3_000_000)
     assert not _box_contains(box, 5_000_000, 3_000_000)
