@@ -17,6 +17,7 @@ layout surface that PCB-analysis tooling builds on.
 - **Board & System Configuration**: Register boards and systems; add or remove them without restarting
 - **PCB Sources**: Associate a `.kicad_pcb` layout with each board for PCB-analysis tooling
 - **PCB Tools (kicad-cli)**: Headless design-rule checking, 3D board renders, and per-layer SVG export from `.kicad_pcb` layouts
+- **Live KiCad Session**: Connect to a running KiCad 9 PCB editor through the official IPC API for selection sync and reversible GUI cross-probing
 - **Smart Caching**: Optional file caching of parsed schematics for faster repeated queries
 
 ## Installation
@@ -172,6 +173,31 @@ in `kicad_mcp.pcb_model`; direct 2D PNG rendering lives in
 | `pcb_net_lengths` | Sorted routed lengths for nets matching a glob or regular expression |
 | `pcb_crop` | Inline PNG crop of a component, a net's copper bounds, or an explicit board-coordinate window; returns MCP ImageContent plus the saved path |
 | `pcb_highlight_net` | Inline PNG with one net drawn bright over dimmed board copper, including lower-alpha zones; returns MCP ImageContent plus the saved path |
+
+### Live KiCad session (IPC API)
+
+These tools talk to a running KiCad 9 PCB editor through KiCad's official
+`kicad-python` (`kipy`) IPC client. They are different from the file-based PCB
+model tools above: they operate on the user's visible KiCad GUI session and fail
+closed when no IPC server is reachable. To use them, enable KiCad's API server in
+KiCad Preferences → Plugins, then keep the target PCB open in the PCB editor. The
+server attempts KiCad's default IPC socket, or `KICAD_API_SOCKET` when that
+environment variable is set, and every IPC call uses a short timeout so the MCP
+server does not hang.
+
+The KiCad 9 Python IPC surface exposes open-document discovery, board item
+queries, selection read/write, net queries, and item-by-net queries. It does not
+expose a typed zoom or pan command in `kicad-python` 0.7.1, so live focus selects
+the target footprint or item and reports that view centering is unavailable rather
+than fabricating a GUI state.
+
+| Tool | Description |
+|------|-------------|
+| `kicad_session` | Report whether KiCad IPC is reachable, the KiCad version, the attempted API socket, and open PCB document paths |
+| `kicad_focus` | Select a footprint `reference` or a board `position` (`x_mm`, `y_mm`) in the running PCB editor; view centering is reported as unsupported when the IPC client cannot do it |
+| `kicad_highlight_net` | Select all selectable copper items on a live board net so KiCad visibly highlights the routed net in the GUI |
+| `kicad_get_selection` | Read the user's current GUI selection as references, nets, item types, and item summaries that compose with parsed-model tools such as `pcb_component` and `pcb_net_route` |
+| `kicad_open_board` | Resolves a configured board or PCB path through `KiCadMCPConfig.resolve_pcb_source`, then fails closed because KiCad 9's Python IPC client does not expose an open-board command |
 
 ## Usage Examples
 
