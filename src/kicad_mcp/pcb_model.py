@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import sexpdata
 from kiutils.board import Board  # type: ignore[import-untyped]
 
 
@@ -69,6 +70,27 @@ class Pad:
 
 
 @dataclass
+class SilkscreenGraphic:
+    """A footprint-local silkscreen graphic transformed to board coordinates."""
+
+    kind: str  # line | arc | circle | polygon | polyline
+    layer: str
+    points: list[Point] = field(default_factory=list)
+    width: float = 0.12
+    fill: bool = False
+
+
+@dataclass
+class SilkscreenText:
+    """A reference-designator label transformed to board coordinates."""
+
+    text: str
+    layer: str
+    position: Point
+    rotation: float = 0.0
+
+
+@dataclass
 class Footprint:
     """A placed component footprint."""
 
@@ -79,6 +101,8 @@ class Footprint:
     position: Point
     rotation: float  # degrees
     pads: list[Pad] = field(default_factory=list)
+    silkscreen_graphics: list[SilkscreenGraphic] = field(default_factory=list)
+    reference_text: SilkscreenText | None = None
 
     @property
     def side(self) -> str:
@@ -172,6 +196,135 @@ def _rotate_pad(px: float, py: float, angle_deg: float) -> tuple[float, float]:
     a = math.radians(angle_deg)
     c, s = math.cos(a), math.sin(a)
     return (px * c + py * s, -px * s + py * c)
+
+
+def _position_relative_to_footprint(
+    fx: float, fy: float, frot: float, position: Any
+) -> Point:
+    """Transform a footprint-local kiutils position into board coordinates."""
+
+    dx, dy = _rotate_pad(float(position.X), float(position.Y), frot)
+    return Point(fx + dx, fy + dy)
+
+
+def _stroke_width(item: Any, default: float = 0.12) -> float:
+    stroke = getattr(item, "stroke", None)
+    width = getattr(stroke, "width", None) if stroke is not None else None
+    if width is None:
+        width = getattr(item, "width", None)
+    return float(width if width is not None else default)
+
+
+def _resolve_layer_tokens(tokens: list[str], board_layers: list[str]) -> list[str]:
+    """Expand KiCad wildcard layer tokens into concrete board layer names."""
+
+    resolved: list[str] = []
+
+    def add(layer: str) -> None:
+        if layer in board_layers and layer not in resolved:
+            resolved.append(layer)
+
+    for token in tokens:
+        if token.startswith("*."):
+            suffix = token[1:]
+            for layer in board_layers:
+                if layer.endswith(suffix):
+                    add(layer)
+        elif token.startswith("F&B."):
+            suffix = token[3:]
+            add(f"F{suffix}")
+            add(f"B{suffix}")
+        else:
+            add(token)
+    return resolved
+
+
+def _footprint_silkscreen_graphics(
+    fp: Any, fx: float, fy: float, frot: float
+) -> list[SilkscreenGraphic]:
+    """Collect footprint graphic items on silkscreen layers in board coordinates."""
+
+    graphics: list[SilkscreenGraphic] = []
+
+    def pt(position: Any) -> Point:
+        return _position_relative_to_footprint(fx, fy, frot, position)
+
+    for item in getattr(fp, "graphicItems", []) or []:
+        layer = getattr(item, "layer", "")
+        if layer not in {"F.SilkS", "B.SilkS"}:
+            continue
+        kind = type(item).__name__
+        width = _stroke_width(item)
+        fill = getattr(item, "fill", None) in {"yes", "solid"}
+        if kind == "FpLine":
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="line",
+                    layer=layer,
+                    points=[pt(item.start), pt(item.end)],
+                    width=width,
+                )
+            )
+        elif kind == "FpArc":
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="arc",
+                    layer=layer,
+                    points=[pt(item.start), pt(item.mid), pt(item.end)],
+                    width=width,
+                )
+            )
+        elif kind == "FpCircle":
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="circle",
+                    layer=layer,
+                    points=[pt(item.center), pt(item.end)],
+                    width=width,
+                    fill=fill,
+                )
+            )
+        elif kind == "FpRect":
+            start = item.start
+            end = item.end
+            corners = [
+                Point(float(start.X), float(start.Y)),
+                Point(float(end.X), float(start.Y)),
+                Point(float(end.X), float(end.Y)),
+                Point(float(start.X), float(end.Y)),
+            ]
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="polygon",
+                    layer=layer,
+                    points=[
+                        Point(fx + dx, fy + dy)
+                        for dx, dy in (_rotate_pad(p.x, p.y, frot) for p in corners)
+                    ],
+                    width=width,
+                    fill=fill,
+                )
+            )
+        elif kind == "FpPoly":
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="polygon",
+                    layer=layer,
+                    points=[pt(p) for p in getattr(item, "coordinates", []) or []],
+                    width=width,
+                    fill=fill,
+                )
+            )
+        elif kind == "FpCurve":
+            graphics.append(
+                SilkscreenGraphic(
+                    kind="polyline",
+                    layer=layer,
+                    points=[pt(p) for p in getattr(item, "coordinates", []) or []],
+                    width=width,
+                )
+            )
+    return graphics
 
 
 class PCBModel:
