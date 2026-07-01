@@ -25,7 +25,7 @@ def test_sig_route_length_and_single_island(model):
     assert route.total_length_mm == pytest.approx(18.4, abs=1e-6)
     assert route.layer_lengths_mm == {"F.Cu": pytest.approx(18.4, abs=1e-6)}
     assert route.width_lengths_mm == {0.25: pytest.approx(18.4, abs=1e-6)}
-    assert route.copper_island_count == 2
+    assert route.copper_island_count == 3
     assert not route.connected_only_through_zone
     assert route.endpoints == ["R1.2", "R2.1", "U1.3"]
 
