@@ -47,4 +47,6 @@ def find_kicad_cli() -> str:
         except Exception:
             continue
 
-    raise RuntimeError("Could not find kicad-cli. Please install KiCad or provide the path.")
+    raise RuntimeError(
+        "Could not find kicad-cli. Please install KiCad or provide the path."
+    )
