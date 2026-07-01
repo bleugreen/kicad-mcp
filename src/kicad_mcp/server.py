@@ -1,8 +1,7 @@
 "KiCad MCP Server with circuit graph functionality."
 
-import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
@@ -24,7 +23,6 @@ class KiCadMCPServer:
         self.circuits: Dict[str, CircuitGraph] = {}  # Cache loaded circuits
         self.systems: Dict[str, MultiBoardGraph] = {}  # Cache loaded systems
         self.datasheet_finder = DatasheetFinder(self.config.cache_dir)  # Datasheet lookup
-        self._file_path_diff: Optional[str] = None  # Store diff for file path loads
         self.setup_handlers()
         self.server.call_tool()(self.handle_call_tool)
 
@@ -35,210 +33,6 @@ class KiCadMCPServer:
         async def handle_list_tools() -> list[types.Tool]:
             """List available tools."""
             return [
-                types.Tool(
-                    name="get_overview",
-                    description="Get a comprehensive overview of the schematic, including statistics and the full netlist.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="get_info",
-                    description="Get high-level metadata and statistics for a KiCad schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="list_components",
-                    description="List all components in the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "category": {
-                                "type": "string",
-                                "description": "Optional: Filter by category (e.g., 'ICs', 'Resistors')"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="search_components",
-                    description="Search for components by field value (e.g., value, manufacturer, footprint)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "field": {
-                                "type": "string",
-                                "description": "Field to search (e.g., 'value', 'footprint', 'Manufacturer', 'MPN')"
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "Search query (supports partial matching, case-insensitive)"
-                            }
-                        },
-                        "required": ["source", "field", "query"]
-                    }
-                ),
-                types.Tool(
-                    name="list_nets",
-                    description="List all nets in the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "power_only": {
-                                "type": "boolean",
-                                "description": "Only show power nets",
-                                "default": False
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="get_netlist",
-                    description="Get a full netlist view of the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="examine_component",
-                    description="Get detailed information about a specific component",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference (e.g., 'IC2', 'R1')"
-                            }
-                        },
-                        "required": ["source", "reference"]
-                    }
-                ),
-                types.Tool(
-                    name="examine_net",
-                    description="Get detailed information about a specific net",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "net_name": {
-                                "type": "string",
-                                "description": "Net name (e.g., 'GND', 'VCC')"
-                            }
-                        },
-                        "required": ["source", "net_name"]
-                    }
-                ),
-                types.Tool(
-                    name="trace_connection",
-                    description="Find the connection path between two components",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "start_ref": {
-                                "type": "string",
-                                "description": "Starting component reference"
-                            },
-                            "end_ref": {
-                                "type": "string",
-                                "description": "Ending component reference"
-                            }
-                        },
-                        "required": ["source", "start_ref", "end_ref"]
-                    }
-                ),
-                types.Tool(
-                    name="find_connected_components",
-                    description="Find all components connected to a given component within N hops",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference"
-                            },
-                            "max_hops": {
-                                "type": "integer",
-                                "description": "Maximum number of hops",
-                                "default": 2
-                            }
-                        },
-                        "required": ["source", "reference"]
-                    }
-                ),
-                types.Tool(
-                    name="check_pin_connection",
-                    description="Check what net a specific component pin is connected to",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference"
-                            },
-                            "pin_number": {
-                                "type": "string",
-                                "description": "Pin number"
-                            }
-                        },
-                        "required": ["source", "reference", "pin_number"]
-                    }
-                ),
                 types.Tool(
                     name="search_datasheet",
                     description="Search for component datasheet URL using manufacturer and part number",
@@ -372,6 +166,10 @@ class KiCadMCPServer:
                                 "type": "string",
                                 "description": "Board description (optional)",
                                 "default": ""
+                            },
+                            "pcb": {
+                                "type": "string",
+                                "description": "Path to the .kicad_pcb layout file (optional)"
                             }
                         },
                         "required": ["name", "path"]
@@ -440,248 +238,8 @@ class KiCadMCPServer:
         if not arguments:
             arguments = {}
 
-        # Get source parameter (board name or file path)
-        source = arguments.get("source")
-        if not source and name not in ["list_configured_boards", "list_configured_systems",
-                                        "load_board", "load_system", "trace_cross_board_signal",
-                                        "get_system_overview", "reload_config", "add_board",
-                                        "remove_board", "add_system", "remove_system", "search_datasheet"]:
-            return [types.TextContent(
-                type="text",
-                text="Error: source parameter is required"
-            )]
-
-        # Load or get cached circuit for tools that need it
-        circuit = None
-        if source:
-            circuit = self._load_circuit(source)
-        if source and not circuit:
-            return [types.TextContent(
-                type="text",
-                text=f"Error: Could not load schematic from {source}"
-            )]
-
         try:
-            if name == "get_overview":
-                stats = circuit.get_info_text()
-                netlist = circuit.get_full_netlist()
-                result = f"{stats}\n\n---\n\n{netlist}"
-
-            elif name == "get_info":
-                result = circuit.get_info_text()
-
-            elif name == "get_netlist":
-                result = circuit.get_full_netlist()
-
-            elif name == "search_components":
-                field = arguments.get("field").lower()
-                query = arguments.get("query").lower()
-                matches = []
-
-                for ref, comp in circuit.netlist.components.items():
-                    # Search in standard fields
-                    if field == "value":
-                        search_value = comp.value.lower()
-                    elif field == "footprint":
-                        search_value = comp.footprint.lower()
-                    elif field == "reference":
-                        search_value = ref.lower()
-                    else:
-                        # Search in custom fields
-                        search_value = comp.fields.get(field, "").lower()
-
-                    # Partial match
-                    if query in search_value:
-                        # Format output similar to list_components
-                        if circuit._is_passive_component(ref):
-                            nets = circuit.get_nets_of_component(ref)
-                            nets_str = f" [{', '.join(nets)}]" if nets else ""
-                            matches.append(f"- **{ref}**: {comp.value}{nets_str}")
-                        else:
-                            matches.append(f"- **{ref}**: {comp.value}")
-
-                result = f"# Component Search: {field} = '{arguments.get('query')}'\n\n"
-                if matches:
-                    result += f"Found {len(matches)} matches:\n\n"
-                    result += '\n'.join(matches)
-                else:
-                    result += "No components found"
-
-            elif name == "list_nets":
-                power_only = arguments.get("power_only", False)
-                nets = []
-
-                for net_name, net in circuit.netlist.nets.items():
-                    if not power_only or circuit._is_power_net(net_name):
-                        conn_count = len(net.connections)
-                        nets.append(f"- **{net_name}**: {conn_count} connections")
-
-                result = f"# Nets {'(Power only)' if power_only else ''}\n\n"
-                result += '\n'.join(sorted(nets)) if nets else "No nets found"
-
-            elif name == "examine_component":
-                reference = arguments.get("reference")
-                comp_data = circuit.get_component(reference)
-
-                if comp_data:
-                    result = f"# Component: {reference}\n\n"
-                    result += f"**Value:** {comp_data.get('value')}\n"
-                    result += f"**Category:** {comp_data.get('category')}\n"
-                    result += f"**Footprint:** {comp_data.get('footprint', 'N/A')}\n"
-
-                    # Try to get/show datasheet URL for non-passives
-                    datasheet_url = None
-                    comp_obj = circuit.netlist.components.get(reference)
-
-                    if comp_obj and not circuit._is_passive_component(reference):
-                        # First check if datasheet field is already populated with a PDF
-                        if (
-                            comp_obj.datasheet
-                            and comp_obj.datasheet not in ['~', '']
-                            and '.pdf' in comp_obj.datasheet.lower()
-                        ):
-                            datasheet_url = comp_obj.datasheet
-                        else:
-                            # Try to look up using manufacturer and part number from fields
-                            # Different symbol libraries use different field names:
-                            # - LCSC: "Manufacturer" / "Manufacturer Part"
-                            # - Mouser: "Manufacturer_Name" / "Manufacturer_Part_Number"
-                            # - Others: "MFR" / "MPN" / "Part Number"
-                            manufacturer = (
-                                comp_obj.fields.get('Manufacturer')
-                                or comp_obj.fields.get('Manufacturer_Name')
-                                or comp_obj.fields.get('MFR')
-                                or ''
-                            )
-                            part_number = (
-                                comp_obj.fields.get('MPN')
-                                or comp_obj.fields.get('Manufacturer Part')
-                                or comp_obj.fields.get('Manufacturer_Part_Number')
-                                or comp_obj.fields.get('Part Number')
-                                or comp_obj.value
-                            )
-
-                            # Attempt lookup if we have at least a part number
-                            if part_number:
-                                # Use empty string for manufacturer if not available - search will still work
-                                if not manufacturer:
-                                    manufacturer = ''
-
-                                try:
-                                    datasheet_url = self.datasheet_finder.find_datasheet(
-                                        manufacturer,
-                                        part_number,
-                                        use_cache=True
-                                    )
-                                except Exception:
-                                    pass  # Silently fail if lookup doesn't work
-
-                    if datasheet_url:
-                        result += f"**Datasheet:** {datasheet_url}\n"
-
-                    result += "\n"
-
-                    # Show connected nets
-                    nets = circuit.get_nets_of_component(reference)
-                    result += f"## Connected Nets ({len(nets)})\n\n"
-                    for net in nets:
-                        result += f"- {net}\n"
-
-                    # Show pins
-                    pins = comp_data.get('pins', {})
-                    if pins:
-                        result += f"\n## Pins ({len(pins)})\n\n"
-                        for pin_num, pin_name in pins.items():
-                            net = circuit.get_pin_net(reference, pin_num)
-                            result += f"- Pin {pin_num} ({pin_name}): {net or 'NC'}\n"
-                else:
-                    result = f"Component {reference} not found"
-
-            elif name == "examine_net":
-                net_name = arguments.get("net_name")
-                net_details = circuit.get_net_details(net_name)
-
-                if net_details:
-                    result = f"# Net: {net_name}\n\n"
-                    result += f"**Power net:** {'Yes' if net_details['is_power'] else 'No'}\n"
-                    result += f"**Connections:** {net_details['num_connections']}\n"
-                    result += f"**Component types:** {', '.join(net_details['component_types'])}\n\n"
-
-                    result += "## Connected Components\n\n"
-                    for ref, pin, pin_name in net_details['components']:
-                        comp = circuit.netlist.components.get(ref)
-
-                        # Format based on component type
-                        if ref.startswith('#'):
-                            # Power symbol - just show reference
-                            result += f"- {ref}\n"
-                        elif comp and circuit._is_passive_component(ref):
-                            # Passive - show value and other net
-                            nets = circuit.get_nets_of_component(ref)
-                            other_nets = [n for n in nets if n != net_name]
-                            other_net_str = f" → [{', '.join(other_nets)}]" if other_nets else ""
-                            result += f"- **{ref}**: {comp.value}{other_net_str}\n"
-                        elif ref.startswith('J') or ref.startswith('CN') or ref.startswith('P'):
-                            # Connector - show ref:pin
-                            result += f"- {ref}:{pin}\n"
-                        else:
-                            # IC or other component - show ref (pin_name)
-                            result += f"- {ref} ({pin_name})\n"
-                else:
-                    result = f"Net {net_name} not found"
-
-            elif name == "trace_connection":
-                start_ref = arguments.get("start_ref")
-                end_ref = arguments.get("end_ref")
-
-                path = circuit.trace_path(start_ref, end_ref)
-                if path:
-                    result = f"# Connection Path: {start_ref} → {end_ref}\n\n"
-                    result += " → ".join(path)
-                else:
-                    result = f"No connection path found between {start_ref} and {end_ref}"
-
-            elif name == "find_connected_components":
-                reference = arguments.get("reference")
-                max_hops = arguments.get("max_hops", 2)
-
-                connected = circuit.find_connected_group(reference, max_hops)
-                connected.discard(reference)  # Remove the starting component
-
-                result = f"# Components within {max_hops} hops of {reference}\n\n"
-                result += f"Found {len(connected)} components:\n\n"
-
-                for comp_ref in sorted(list(connected)[:30]):
-                    comp = circuit.netlist.components.get(comp_ref)
-                    if comp:
-                        result += f"- {comp_ref}: {comp.value}\n"
-
-            elif name == "check_pin_connection":
-                reference = arguments.get("reference")
-                pin_number = arguments.get("pin_number")
-
-                net = circuit.get_pin_net(reference, pin_number)
-                comp = circuit.netlist.components.get(reference)
-
-                result = f"# Pin Connection: {reference}:{pin_number}\n\n"
-                if comp:
-                    pin_name = comp.pins.get(pin_number, "Unknown")
-                    result += f"**Pin name:** {pin_name}\n"
-
-                if net:
-                    result += f"**Connected to net:** {net}\n\n"
-
-                    # Show what else is on this net
-                    net_details = circuit.get_net_details(net)
-                    if net_details:
-                        result += f"**Other components on this net:**\n"
-                        for ref, pin, name in net_details['components'][:10]:
-                            if ref != reference:
-                                result += f"- {ref}:{pin} ({name})\n"
-                else:
-                    result += "**Not connected**"
-
-            elif name == "search_datasheet":
+            if name == "search_datasheet":
                 manufacturer = arguments.get("manufacturer", "")
                 part_number = arguments.get("part_number", "")
                 force_refresh = arguments.get("force_refresh", False)
@@ -841,13 +399,16 @@ class KiCadMCPServer:
                 board_desc = arguments.get("description", "")
 
                 # Add the board
-                self.config.add_board(board_name, board_path, board_desc)
+                board_pcb = arguments.get("pcb")
+                self.config.add_board(board_name, board_path, board_desc, board_pcb)
 
                 result = f"# Board Added\n\n"
                 result += f"**Name:** {board_name}\n"
                 result += f"**Path:** {board_path}\n"
-                result += f"**Description:** {board_desc}\n\n"
-                result += f"Saved to: {self.config.config_path}\n"
+                result += f"**Description:** {board_desc}\n"
+                if board_pcb:
+                    result += f"**PCB:** {board_pcb}\n"
+                result += f"\nSaved to: {self.config.config_path}\n"
 
             elif name == "remove_board":
                 board_name = arguments.get("name")
@@ -892,11 +453,6 @@ class KiCadMCPServer:
             else:
                 result = f"Unknown tool: {name}"
 
-            # Prepend any pending diff from auto-reload
-            diff = self._get_pending_diff()
-            if diff:
-                result = diff + "\n\n---\n\n" + result
-
             return [types.TextContent(type="text", text=result)]
 
         except Exception as e:
@@ -904,87 +460,6 @@ class KiCadMCPServer:
                 type="text",
                 text=f"Error executing {name}: {str(e)}"
             )]
-    def _load_circuit(self, source: str) -> Optional[CircuitGraph]:
-        """Load a circuit from cache or file.
-
-        Auto-reloads if file has been modified. Stores diff for retrieval via _get_pending_diff().
-
-        Args:
-            source: Either a board name from config or a full path to a schematic
-        """
-        # First check if it's a board name from config
-        if not ('/' in source or '\\' in source):
-            # Looks like a board name, try to load from config
-            circuit = self.config.load_board(source)
-            if circuit:
-                self.circuits[source] = circuit
-                return circuit
-
-        # Otherwise treat as a file path
-        path = Path(source)
-
-        # Check cache with mtime validation
-        if source in self.circuits:
-            cached = self.circuits[source]
-            if cached._filepath and cached._filepath.exists():
-                current_mtime = cached._filepath.stat().st_mtime
-
-                # Check if file has been modified since we loaded it
-                if cached._load_mtime and cached._load_mtime >= current_mtime:
-                    return cached  # Cache is fresh
-
-                # File has changed - reload and compute diff
-                print(f"Schematic '{source}' has changed, auto-reloading...", file=sys.stderr)
-                try:
-                    if path.suffix == '.net':
-                        new_circuit = CircuitGraph.from_netlist(path)
-                    else:
-                        new_circuit = CircuitGraph.from_kicad_schematic(path)
-
-                    # Compute and store diff
-                    if new_circuit:
-                        diff = self.config._compute_diff(cached, new_circuit)
-                        self._file_path_diff = self.config._format_diff(diff)
-                        self.circuits[source] = new_circuit
-                        return new_circuit
-
-                except Exception as e:
-                    print(f"Error reloading circuit: {e}", file=sys.stderr)
-                    return cached  # Return stale cache on error
-
-        # Load new circuit
-        try:
-            if path.suffix == '.net':
-                circuit = CircuitGraph.from_netlist(path)
-            else:
-                circuit = CircuitGraph.from_kicad_schematic(path)
-
-            # Cache it
-            self.circuits[source] = circuit
-            return circuit
-
-        except Exception as e:
-            print(f"Error loading circuit: {e}", file=sys.stderr)
-            return None
-
-    def _get_pending_diff(self) -> Optional[str]:
-        """Get any pending diff from config or file path loads, then clear it.
-
-        Returns:
-            Formatted diff string or None
-        """
-        # Check config first (for named boards)
-        config_diff = self.config.get_last_diff()
-        if config_diff:
-            return config_diff
-
-        # Check file path diff
-        if self._file_path_diff:
-            diff = self._file_path_diff
-            self._file_path_diff = None
-            return diff
-
-        return None
 
     async def run(self):
         """Run the MCP server."""

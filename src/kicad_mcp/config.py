@@ -461,22 +461,82 @@ class KiCadMCPConfig:
         with open(self.config_path, 'w') as f:
             yaml.dump(self.config, f, default_flow_style=False)
 
-    def add_board(self, name: str, path: str, description: str = "") -> None:
+    def add_board(self, name: str, path: str, description: str = "", pcb: Optional[str] = None) -> None:
         """Add a board to the configuration.
 
         Args:
             name: Board identifier
-            path: Path to schematic file
+            path: Path to schematic (.kicad_sch) file
             description: Board description
+            pcb: Optional path to the board's .kicad_pcb layout file
         """
         if 'boards' not in self.config:
             self.config['boards'] = {}
 
-        self.config['boards'][name] = {
+        entry = {
             'path': str(Path(path).absolute()),
             'description': description
         }
+        if pcb:
+            entry['pcb'] = str(Path(pcb).absolute())
+
+        self.config['boards'][name] = entry
         self.save_config()
+
+    def _pcb_boards_hint(self) -> str:
+        """Human-readable hint listing configured boards that have a 'pcb' path."""
+        boards_with_pcb = sorted(
+            name for name, info in self.config.get('boards', {}).items()
+            if info.get('pcb')
+        )
+        if boards_with_pcb:
+            return f"Configured boards with a PCB layout: {', '.join(boards_with_pcb)}."
+        return "No configured boards have a 'pcb' path."
+
+    def resolve_pcb_source(self, source: str) -> Path:
+        """Resolve a PCB source to an existing .kicad_pcb file path.
+
+        Accepts either a configured board name (returns that board's ``pcb``
+        path) or a direct path to a ``.kicad_pcb`` file. This is the single
+        entry point PCB-analysis tools use to turn a user-supplied source into a
+        concrete file.
+
+        Args:
+            source: A configured board name or a path to a .kicad_pcb file
+
+        Returns:
+            Path to an existing .kicad_pcb file
+
+        Raises:
+            ValueError: if the source is an unknown board, a board without a
+                ``pcb`` path, or a path that does not exist. The message lists
+                configured boards that do have a ``pcb`` path.
+        """
+        # Configured board name takes priority over path interpretation.
+        board_info = self.config.get('boards', {}).get(source)
+        if board_info is not None:
+            pcb = board_info.get('pcb')
+            if not pcb:
+                raise ValueError(
+                    f"Board '{source}' has no 'pcb' path configured. "
+                    f"{self._pcb_boards_hint()}"
+                )
+            path = Path(pcb).expanduser()
+            if not path.exists():
+                raise ValueError(
+                    f"PCB file for board '{source}' does not exist: {path}"
+                )
+            return path
+
+        # Otherwise treat the source as a direct path to a .kicad_pcb file.
+        path = Path(source).expanduser()
+        if path.exists():
+            return path
+
+        raise ValueError(
+            f"Could not resolve PCB source '{source}': not a configured board "
+            f"and not an existing file. {self._pcb_boards_hint()}"
+        )
 
     def add_system(self, name: str, boards: List[str], description: str = "") -> None:
         """Add a system to the configuration.

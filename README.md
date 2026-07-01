@@ -1,15 +1,22 @@
 # KiCad MCP Server
 
-Model Context Protocol (MCP) server for analyzing KiCad schematics. Query components, trace nets, explore connections, and analyze multi-board systems through a simple tool interface.
+Model Context Protocol (MCP) server for analyzing KiCad printed circuit boards. It
+provides a toolkit for PCB analysis, with multi-board schematic signal tracing and
+component datasheet lookup, exposed through a simple tool interface.
+
+Single-board schematic text queries (component listings, per-net dumps, single-board
+connection tracing) have moved to the companion `kicad-schema` project, which renders a
+schematic as structured YAML. This server focuses on the analysis that is still hard to
+do in text form: signals that cross board boundaries, datasheet discovery, and the PCB
+layout surface that PCB-analysis tooling builds on.
 
 ## Features
 
-- **Circuit Analysis**: Load and analyze KiCad `.kicad_sch` files
-- **Component Queries**: Search, filter, and examine components with detailed pin information
-- **Net Tracing**: Explore nets, trace signal paths, and find connection routes
-- **Multi-Board Systems**: Analyze signals across multiple connected boards
-- **Smart Caching**: Optional file caching for faster repeated queries
-- **Dynamic Configuration**: Add/remove boards and systems without restarting
+- **Multi-Board Analysis**: Trace signals across multiple connected boards
+- **Datasheet Lookup**: Resolve a manufacturer and part number to a datasheet URL
+- **Board & System Configuration**: Register boards and systems; add or remove them without restarting
+- **PCB Sources**: Associate a `.kicad_pcb` layout with each board for PCB-analysis tooling
+- **Smart Caching**: Optional file caching of parsed schematics for faster repeated queries
 
 ## Installation
 
@@ -21,7 +28,9 @@ uv sync
 pip install -e .
 ```
 
-**Requirements**: Python 3.10+
+**Requirements**: Python 3.10+, and KiCad (for `kicad-cli`). The server discovers
+`kicad-cli` automatically at the macOS app-bundle path, `/usr/bin`, and on `PATH`; set
+the `KICAD_CLI` environment variable to point at a specific executable.
 
 ## Quick Start
 
@@ -53,6 +62,7 @@ Create `.kicad_mcp.yaml` in your project directory:
 boards:
   main:
     path: /path/to/main.kicad_sch
+    pcb: /path/to/main.kicad_pcb        # optional: PCB layout for PCB-analysis tools
     description: Main controller board
 
   sensor:
@@ -81,7 +91,10 @@ Configuration files are searched in priority order:
 
 ### Configuration Options
 
-- **boards**: Named board configurations with paths and descriptions
+- **boards**: Named board configurations. Each board has:
+  - `path`: path to the `.kicad_sch` schematic file
+  - `pcb` *(optional)*: path to the `.kicad_pcb` layout file, used by PCB-analysis tools
+  - `description` *(optional)*: human-readable description
 - **systems**: Multi-board system definitions referencing board names
 - **cache.enabled**: Enable/disable pickle caching of parsed schematics
 - **cache.directory**: Where to store cache files
@@ -103,68 +116,25 @@ Configuration files are searched in priority order:
 
 | Tool | Description |
 |------|-------------|
-| `add_board` | Add a new board to configuration |
+| `add_board` | Add a new board to configuration (schematic `path`, optional `pcb`) |
 | `remove_board` | Remove a board from configuration |
 | `add_system` | Add a new multi-board system |
 | `remove_system` | Remove a system from configuration |
-
-### Circuit Analysis (Single Board)
-
-| Tool | Description |
-|------|-------------|
-| `get_overview` | High-level schematic summary (component count, nets, categories) |
-| `list_components` | List all components, optionally filtered by category |
-| `list_nets` | List all nets, optionally power nets only |
-| `examine_component` | Detailed component info (value, pins, connected nets) |
-| `examine_net` | Detailed net info (connections, component types) |
-| `check_pin_connection` | Find which net a specific pin connects to |
-
-### Connection Tracing (Single Board)
-
-| Tool | Description |
-|------|-------------|
-| `trace_connection` | Find connection path between two components |
-| `find_connected_components` | Find all components within N hops of a component |
 
 ### Multi-Board Analysis
 
 | Tool | Description |
 |------|-------------|
-| `get_system_overview` | Overview of multi-board system |
+| `get_system_overview` | Overview of a multi-board system |
 | `trace_cross_board_signal` | Trace a signal across multiple boards |
 
+### Datasheets
+
+| Tool | Description |
+|------|-------------|
+| `search_datasheet` | Resolve a manufacturer and part number to a datasheet URL |
+
 ## Usage Examples
-
-### Analyze a Single Board
-
-```python
-# Get overview
-get_overview(source="main")
-# or use direct path:
-get_overview(source="/path/to/board.kicad_sch")
-
-# List all ICs
-list_components(source="main", category="ICs")
-
-# Examine a specific component
-examine_component(source="main", reference="U1")
-
-# Check what IC2 pin 5 connects to
-check_pin_connection(source="main", reference="IC2", pin_number="5")
-```
-
-### Trace Connections
-
-```python
-# Find path between two components
-trace_connection(source="main", start_ref="U1", end_ref="U5")
-
-# Find everything connected to a regulator within 2 hops
-find_connected_components(source="main", reference="U3", max_hops=2)
-
-# Examine a power net
-examine_net(source="main", net_name="VCC")
-```
 
 ### Multi-Board Systems
 
@@ -182,13 +152,23 @@ trace_cross_board_signal(
 )
 ```
 
+### Datasheet Lookup
+
+```python
+search_datasheet(
+    manufacturer="Texas Instruments",
+    part_number="ADS1299IPAGR"
+)
+```
+
 ### Dynamic Configuration
 
 ```python
-# Add a new board
+# Add a new board, including its PCB layout
 add_board(
     name="power",
     path="/path/to/power.kicad_sch",
+    pcb="/path/to/power.kicad_pcb",
     description="Power supply board"
 )
 
@@ -203,14 +183,6 @@ add_system(
 reload_config()
 ```
 
-## Source Parameter
-
-Most analysis tools accept a `source` parameter which can be:
-- **Board name** from configuration (e.g., `"main"`)
-- **Direct file path** to a `.kicad_sch` file (e.g., `"/path/to/board.kicad_sch"`)
-
-System tools use `system_name` to reference configured multi-board systems.
-
 ## Development
 
 ```bash
@@ -218,13 +190,10 @@ System tools use `system_name` to reference configured multi-board systems.
 uv sync --extra dev
 
 # Run tests
-pytest
+uv run pytest
 
-# Format code
-black src/
-
-# Type checking
-mypy src/
+# Lint
+uv run ruff check src/
 ```
 
 ## License
