@@ -6,7 +6,6 @@ from kicad_mcp.circuit_graph import CircuitGraph
 from kicad_mcp.config import CACHE_VERSION, KiCadMCPConfig
 from kicad_mcp.kicad_cli import find_kicad_cli
 
-
 # --- Cache-layer regressions ------------------------------------------------
 
 def test_circuit_graph_resolves_load_mtime_without_init():
