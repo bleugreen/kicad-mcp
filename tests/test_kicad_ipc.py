@@ -4,9 +4,15 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from mcp.types import EmbeddedResource, ImageContent, TextContent
 
 from kicad_mcp.kicad_ipc import KiCadIPC, KiCadIPCError, _box_contains
 from kicad_mcp.server import KiCadMCPServer
+
+
+def _text(result: list[TextContent | ImageContent | EmbeddedResource]) -> str:
+    assert isinstance(result[0], TextContent)
+    return result[0].text
 
 
 class FakeNet:
@@ -64,7 +70,7 @@ def test_kicad_session_unreachable_error_shape() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_session", {}))
 
-    text = getattr(result[0], "text")
+    text = _text(result)
     assert text.startswith("Error:")
     assert "Attempted socket: ipc:///tmp/kicad/api.sock" in text
     assert "Enable KiCad API" in text
@@ -89,9 +95,7 @@ def test_focus_argument_validation_returns_clean_error() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_focus", {}))
 
-    assert (
-        getattr(result[0], "text") == "Error: Pass exactly one of reference or position"
-    )
+    assert _text(result) == "Error: Pass exactly one of reference or position"
 
 
 def test_box_contains_kipy_style_pos_size_box() -> None:
@@ -108,7 +112,7 @@ def test_kicad_open_board_missing_source_validation() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_open_board", {}))
 
-    assert getattr(result[0], "text") == "Error: source parameter is required"
+    assert _text(result) == "Error: source parameter is required"
 
 
 def test_live_kicad_session_skip_unless_ipc_api_reachable() -> None:
