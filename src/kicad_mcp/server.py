@@ -13,6 +13,7 @@ from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
 from . import kicad_cli, pcb_rendering
 from .kicad_cli import KiCadCLIError
+from .kicad_ipc import KiCadIPC, KiCadIPCError, format_selection, format_session
 from .pcb_model import PCBModel, load_pcb_model
 from .pcb_route import (
     RouteAnalysis,
@@ -36,6 +37,15 @@ PCB_ROUTE_TOOLS = {"pcb_net_route", "pcb_diff_pair", "pcb_net_lengths"}
 # PCB image tools render directly from PCBModel geometry to PNG ImageContent.
 PCB_IMAGE_TOOLS = {"pcb_crop", "pcb_highlight_net"}
 
+# Live-session tools talk to a running KiCad GUI through the official IPC API.
+KICAD_IPC_TOOLS = {
+    "kicad_session",
+    "kicad_focus",
+    "kicad_highlight_net",
+    "kicad_get_selection",
+    "kicad_open_board",
+}
+
 
 class KiCadMCPServer:
     """MCP server for KiCad schematic analysis."""
@@ -47,6 +57,7 @@ class KiCadMCPServer:
         self.circuits: Dict[str, CircuitGraph] = {}  # Cache loaded circuits
         self.systems: Dict[str, MultiBoardGraph] = {}  # Cache loaded systems
         self.datasheet_finder = DatasheetFinder(self.config.cache_dir)  # Datasheet lookup
+        self.kicad_ipc = KiCadIPC(self.config)
         self.setup_handlers()
         self.server.call_tool()(self.handle_call_tool)
 
@@ -561,6 +572,53 @@ class KiCadMCPServer:
                         "required": ["source", "net"]
                     }
                 ),
+                types.Tool(
+                    name="kicad_session",
+                    description="Report live KiCad IPC reachability, version, attempted socket, and open PCB documents.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="kicad_focus",
+                    description="Select a footprint reference or board position in the running KiCad PCB editor. View zoom/pan is reported when unsupported by the IPC client.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "reference": {"type": "string", "description": "Footprint reference designator, e.g. U3"},
+                            "position": {
+                                "type": "object",
+                                "description": "Board position in millimetres",
+                                "properties": {
+                                    "x_mm": {"type": "number"},
+                                    "y_mm": {"type": "number"},
+                                },
+                                "required": ["x_mm", "y_mm"],
+                            },
+                        },
+                    },
+                ),
+                types.Tool(
+                    name="kicad_highlight_net",
+                    description="Select all selectable copper items on a net in the running KiCad PCB editor so the GUI highlights them live.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"net": {"type": "string", "description": "Net name"}},
+                        "required": ["net"],
+                    },
+                ),
+                types.Tool(
+                    name="kicad_get_selection",
+                    description="Read the user's current live KiCad PCB selection as references, nets, item types, and item summaries.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="kicad_open_board",
+                    description="Resolve a PCB source and fail closed if the installed KiCad IPC client cannot open documents.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"source": {"type": "string", "description": "Configured board name or .kicad_pcb/.kicad_sch path"}},
+                        "required": ["source"],
+                    },
+                ),
             ]
 
     async def handle_call_tool(
@@ -585,6 +643,9 @@ class KiCadMCPServer:
 
         if name in PCB_IMAGE_TOOLS:
             return self._handle_pcb_image_tool(name, arguments)
+
+        if name in KICAD_IPC_TOOLS:
+            return self._handle_kicad_ipc_tool(name, arguments)
 
         try:
             if name == "search_datasheet":
@@ -808,6 +869,42 @@ class KiCadMCPServer:
                 type="text",
                 text=f"Error executing {name}: {str(e)}"
             )]
+
+    def _handle_kicad_ipc_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch live KiCad IPC tools."""
+        try:
+            if name == "kicad_session":
+                result = format_session(self.kicad_ipc.session())
+            elif name == "kicad_focus":
+                result = format_selection(
+                    self.kicad_ipc.focus(
+                        reference=arguments.get("reference"),
+                        position=arguments.get("position"),
+                    )["selection"],
+                    title="Live KiCad Focus",
+                )
+            elif name == "kicad_highlight_net":
+                net = arguments.get("net")
+                if not net:
+                    return [types.TextContent(type="text", text="Error: net parameter is required")]
+                data = self.kicad_ipc.highlight_net(str(net))
+                result = format_selection(
+                    data["selection"],
+                    title=f"Live KiCad Net Highlight: {data['net']}",
+                )
+            elif name == "kicad_get_selection":
+                result = format_selection(self.kicad_ipc.get_selection())
+            elif name == "kicad_open_board":
+                result = str(self.kicad_ipc.open_board(arguments.get("source", "")))
+            else:
+                result = f"Unknown live KiCad IPC tool: {name}"
+            return [types.TextContent(type="text", text=result)]
+        except (KiCadIPCError, ValueError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
 
     def _handle_pcb_model_tool(
         self, name: str, arguments: dict
