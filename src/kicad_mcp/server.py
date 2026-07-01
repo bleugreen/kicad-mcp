@@ -1,7 +1,7 @@
 "KiCad MCP Server with circuit graph functionality."
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
@@ -13,10 +13,15 @@ from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
 from . import kicad_cli
 from .kicad_cli import KiCadCLIError
+from .pcb_model import PCBModel, load_pcb_model
 
 # PCB tools operate on .kicad_pcb files via kicad-cli, resolving their source
 # through the config, so they bypass the schematic/circuit machinery entirely.
 PCB_CLI_TOOLS = {"pcb_drc", "pcb_render", "pcb_export_layers"}
+
+# Parsed-model PCB tools query the typed board model (pcb_model) rather than
+# shelling out to kicad-cli; they resolve their source through the same config.
+PCB_MODEL_TOOLS = {"pcb_overview", "pcb_component", "pcb_components_near"}
 
 
 class KiCadMCPServer:
@@ -340,6 +345,61 @@ class KiCadMCPServer:
                         "required": ["source", "layers"]
                     }
                 ),
+                types.Tool(
+                    name="pcb_overview",
+                    description="Get a PCB layout overview: board dimensions, layer/stackup summary, footprint/track/via/zone counts, net count, and top nets by copper element count.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            }
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_component",
+                    description="Get a component's PCB placement (position, side, rotation), footprint id, and pads with their nets.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator (e.g., 'R1', 'U3')"
+                            }
+                        },
+                        "required": ["source", "reference"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_components_near",
+                    description="Find footprints placed within a radius (mm) of a given component, with distances.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator to search around"
+                            },
+                            "radius_mm": {
+                                "type": "number",
+                                "description": "Search radius in millimetres",
+                                "default": 5.0
+                            }
+                        },
+                        "required": ["source", "reference"]
+                    }
+                ),
             ]
 
     async def handle_call_tool(
@@ -355,6 +415,9 @@ class KiCadMCPServer:
         # schematic circuit graph, so dispatch them before the standard flow.
         if name in PCB_CLI_TOOLS:
             return self._handle_pcb_tool(name, arguments)
+
+        if name in PCB_MODEL_TOOLS:
+            return self._handle_pcb_model_tool(name, arguments)
 
         try:
             if name == "search_datasheet":
@@ -578,6 +641,138 @@ class KiCadMCPServer:
                 type="text",
                 text=f"Error executing {name}: {str(e)}"
             )]
+
+    def _handle_pcb_model_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch the parsed-model PCB tools (overview/component/near).
+
+        These query the in-memory :class:`PCBModel` (no kicad-cli). Source
+        resolution failures surface as an explicit ``Error:`` TextContent.
+        """
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+        try:
+            model = self._load_pcb(source)
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+
+        if name == "pcb_overview":
+            result = self._format_pcb_overview(model)
+        elif name == "pcb_component":
+            result = self._format_pcb_component(model, arguments.get("reference"))
+        else:  # pcb_components_near
+            result = self._format_pcb_components_near(
+                model, arguments.get("reference"), arguments.get("radius_mm", 5.0)
+            )
+        return [types.TextContent(type="text", text=result)]
+
+    def _load_pcb(self, source: str) -> PCBModel:
+        """Resolve a source to a board file and return its cached parsed model.
+
+        Resolution routes through :meth:`KiCadMCPConfig.resolve_pcb_source`;
+        parsing is cached in-memory keyed by (path, mtime) by
+        :func:`load_pcb_model`.
+        """
+        path = self.config.resolve_pcb_source(source)
+        return load_pcb_model(path)
+
+    @staticmethod
+    def _format_pcb_overview(model: PCBModel) -> str:
+        name = Path(str(model.path)).name if model.path else "board"
+        lines = [f"# PCB Overview: {name}", ""]
+
+        dims = model.board_dimensions()
+        bbox = model.bounding_box()
+        if dims and bbox:
+            lines.append(
+                f"**Dimensions:** {dims[0]:.2f} x {dims[1]:.2f} mm "
+                f"(bbox {bbox.min_x:.2f},{bbox.min_y:.2f} to "
+                f"{bbox.max_x:.2f},{bbox.max_y:.2f})"
+            )
+        else:
+            lines.append("**Dimensions:** unknown (no Edge.Cuts outline found)")
+
+        if model.board_thickness is not None:
+            lines.append(f"**Board thickness:** {model.board_thickness} mm")
+        lines.append(
+            f"**Copper layers:** {len(model.copper_layers)} "
+            f"({', '.join(model.copper_layers)})"
+        )
+        lines.append(f"**Total layers defined:** {len(model.layers)}")
+
+        if model.stackup:
+            lines.append("\n## Stackup")
+            for s in model.stackup:
+                thickness = f", {s.thickness} mm" if s.thickness is not None else ""
+                material = f", {s.material}" if s.material else ""
+                lines.append(f"- {s.name} ({s.type}){thickness}{material}")
+
+        lines.append("\n## Counts")
+        lines.append(f"- Footprints: {len(model.footprints)}")
+        lines.append(f"- Tracks (segments): {len(model.tracks)}")
+        lines.append(f"- Arcs: {len(model.arcs)}")
+        lines.append(f"- Vias: {len(model.vias)}")
+        lines.append(f"- Zones: {len(model.zones)}")
+        lines.append(f"- Nets: {len(model.nets)}")
+
+        top = model.top_nets(10)
+        if top:
+            lines.append("\n## Top nets by copper element count")
+            for num, net_name, count in top:
+                label = net_name if net_name else f"(net {num})"
+                lines.append(f"- {label}: {count}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_component(model: PCBModel, reference: Optional[str]) -> str:
+        if not reference:
+            return "Error: reference is required"
+        fp = model.footprint(reference)
+        if fp is None:
+            return f"Component {reference} not found on the PCB"
+
+        lines = [f"# Component: {fp.reference}", ""]
+        lines.append(f"**Value:** {fp.value}")
+        lines.append(f"**Footprint:** {fp.lib_id}")
+        lines.append(f"**Side:** {fp.side}")
+        lines.append(
+            f"**Position:** ({fp.position.x:.3f}, {fp.position.y:.3f}) mm"
+        )
+        lines.append(f"**Rotation:** {fp.rotation:.1f}°")
+
+        lines.append(f"\n## Pads ({len(fp.pads)})")
+        for pad in fp.pads:
+            net = pad.net_name if pad.net_name else "(unconnected)"
+            lines.append(
+                f"- Pad {pad.number} [{pad.pad_type}] → {net} "
+                f"@ ({pad.position.x:.3f}, {pad.position.y:.3f})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_components_near(
+        model: PCBModel, reference: Optional[str], radius_mm: float
+    ) -> str:
+        if not reference:
+            return "Error: reference is required"
+        if model.footprint(reference) is None:
+            return f"Component {reference} not found on the PCB"
+
+        neighbors = model.footprints_near(reference, radius_mm)
+        lines = [
+            f"# Components within {radius_mm} mm of {reference}",
+            "",
+            f"Found {len(neighbors)} component(s):",
+            "",
+        ]
+        for fp, dist in neighbors:
+            lines.append(
+                f"- {fp.reference} ({fp.value}) — {dist:.2f} mm [{fp.side}]"
+            )
+        return "\n".join(lines)
 
     def _handle_pcb_tool(
         self, name: str, arguments: dict

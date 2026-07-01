@@ -33,6 +33,7 @@ dependencies = [
     "kinparse>=1.2.4",
     "pyyaml>=6.0",
     "ddgs>=0.1.0",
+    "kiutils>=1.4.8",
 ]
 
 [project.optional-dependencies]

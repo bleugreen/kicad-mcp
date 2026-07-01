@@ -152,6 +152,20 @@ The underlying wrappers live in `kicad_mcp.kicad_cli` and are importable as plai
 functions, so non-MCP consumers (such as a crop/highlight tool that needs
 board-area-fitted per-layer SVGs) can call them directly.
 
+### PCB Layout (parsed model)
+
+These tools read a typed, in-memory model of the `.kicad_pcb` (placement, copper,
+stackup) parsed with the pure-Python `kiutils` library and cached per
+`(path, mtime)` — no `kicad-cli` process. Their `source` resolves through
+`KiCadMCPConfig.resolve_pcb_source` (a configured board's `pcb` path or a direct
+`.kicad_pcb` path). The queryable model lives in `kicad_mcp.pcb_model`.
+
+| Tool | Description |
+|------|-------------|
+| `pcb_overview` | Board dimensions, layer/stackup summary, footprint/track/via/zone counts, net count, and top nets by copper element count |
+| `pcb_component` | A component's placement (position, side, rotation), footprint id, and pads with their nets |
+| `pcb_components_near` | Footprints placed within a radius (mm) of a component, with distances |
+
 ## Usage Examples
 
 ### Multi-Board Systems

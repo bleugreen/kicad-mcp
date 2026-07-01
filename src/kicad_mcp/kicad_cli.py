@@ -524,3 +524,4 @@ def export_layers_svg(
             )
         paths.append(svg)
     return paths
+

@@ -182,3 +182,7 @@ Temporary Items
 *.kicad_pro
 .kicad_mcp.yaml
 .cairn/assets/
+
+# ...but the small synthetic board fixtures are committed on purpose so the
+# PCB-model unit tests are deterministic and runnable anywhere.
+!tests/fixtures/*.kicad_pcb
