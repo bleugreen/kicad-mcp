@@ -30,7 +30,10 @@ def _vector_to_mm(value: Any) -> dict[str, float] | None:
     y = getattr(value, "y", None)
     if x is None or y is None:
         return None
-    return {"x_mm": _nm_to_mm(x), "y_mm": _nm_to_mm(y)}
+    return {
+        "x_mm": round(float(x) / 1_000_000, 6),
+        "y_mm": round(float(y) / 1_000_000, 6),
+    }
 
 
 def _id_value(item: Any) -> str | None:
@@ -285,7 +288,7 @@ class KiCadIPC:
     @staticmethod
     def _replace_selection(board: Any, items: Sequence[Any]) -> Sequence[Any]:
         board.clear_selection()
-        return board.add_to_selection(list(items))
+        return list(board.add_to_selection(list(items)))
 
     @staticmethod
     def _hit_test_item(board: Any, x_mm: float, y_mm: float) -> Any | None:
@@ -382,26 +385,35 @@ def _box_contains(box: Any, x_nm: int, y_nm: int) -> bool:
         min_y = getattr(getattr(proto, "top_left", None), "y_nm", None)
         max_x = getattr(getattr(proto, "bottom_right", None), "x_nm", None)
         max_y = getattr(getattr(proto, "bottom_right", None), "y_nm", None)
-        if None not in (min_x, min_y, max_x, max_y):
-            lo_x, hi_x = sorted((min_x, max_x))
-            lo_y, hi_y = sorted((min_y, max_y))
-            return lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y
+        if (
+            min_x is not None
+            and min_y is not None
+            and max_x is not None
+            and max_y is not None
+        ):
+            lo_x, hi_x = sorted((int(min_x), int(max_x)))
+            lo_y, hi_y = sorted((int(min_y), int(max_y)))
+            return bool(lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y)
 
     pos = getattr(box, "pos", None)
     size = getattr(box, "size", None)
     if pos is not None and size is not None:
-        lo_x, hi_x = sorted((pos.x, pos.x + size.x))
-        lo_y, hi_y = sorted((pos.y, pos.y + size.y))
-        return lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y
+        pos_x = int(pos.x)
+        pos_y = int(pos.y)
+        size_x = int(size.x)
+        size_y = int(size.y)
+        lo_x, hi_x = sorted((pos_x, pos_x + size_x))
+        lo_y, hi_y = sorted((pos_y, pos_y + size_y))
+        return bool(lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y)
 
     left = getattr(box, "left", None)
     right = getattr(box, "right", None)
     top = getattr(box, "top", None)
     bottom = getattr(box, "bottom", None)
-    if None not in (left, right, top, bottom):
-        lo_x, hi_x = sorted((left, right))
-        lo_y, hi_y = sorted((top, bottom))
-        return lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y
+    if left is not None and right is not None and top is not None and bottom is not None:
+        lo_x, hi_x = sorted((int(left), int(right)))
+        lo_y, hi_y = sorted((int(top), int(bottom)))
+        return bool(lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y)
     return False
 
 

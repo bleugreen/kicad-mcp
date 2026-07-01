@@ -40,7 +40,7 @@ class FakeTrack:
 
 
 class FakeFailingIPC:
-    def session(self):
+    def session(self) -> dict[str, object]:
         raise KiCadIPCError(
             "Could not reach a running KiCad IPC API server. "
             "Enable KiCad API in KiCad Preferences → Plugins.",
@@ -49,11 +49,16 @@ class FakeFailingIPC:
 
 
 class FakeValidationIPC:
-    def focus(self, *, reference=None, position=None):
+    def focus(
+        self,
+        *,
+        reference: str | None = None,
+        position: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         raise ValueError("Pass exactly one of reference or position")
 
 
-def test_kicad_session_unreachable_error_shape():
+def test_kicad_session_unreachable_error_shape() -> None:
     server = KiCadMCPServer()
     server.kicad_ipc = FakeFailingIPC()
 
@@ -65,7 +70,7 @@ def test_kicad_session_unreachable_error_shape():
     assert "Enable KiCad API" in text
 
 
-def test_selection_summary_extracts_references_nets_and_types():
+def test_selection_summary_extracts_references_nets_and_types() -> None:
     ipc = KiCadIPC()
     summary = ipc.selection_summary(
         [FakeFootprint("U1", ["GND", "+3V3"]), FakeTrack("GND")]
@@ -78,7 +83,7 @@ def test_selection_summary_extracts_references_nets_and_types():
     assert summary["items"][0]["position"] == {"x_mm": 12.5, "y_mm": 22.0}
 
 
-def test_focus_argument_validation_returns_clean_error():
+def test_focus_argument_validation_returns_clean_error() -> None:
     server = KiCadMCPServer()
     server.kicad_ipc = FakeValidationIPC()
 
@@ -87,7 +92,7 @@ def test_focus_argument_validation_returns_clean_error():
     assert result[0].text == "Error: Pass exactly one of reference or position"
 
 
-def test_box_contains_kipy_style_pos_size_box():
+def test_box_contains_kipy_style_pos_size_box() -> None:
     box = SimpleNamespace(
         pos=FakeVector(1_000_000, 2_000_000), size=FakeVector(3_000_000, 4_000_000)
     )
@@ -96,7 +101,7 @@ def test_box_contains_kipy_style_pos_size_box():
     assert not _box_contains(box, 5_000_000, 3_000_000)
 
 
-def test_kicad_open_board_missing_source_validation():
+def test_kicad_open_board_missing_source_validation() -> None:
     server = KiCadMCPServer()
 
     result = asyncio.run(server.handle_call_tool("kicad_open_board", {}))
@@ -104,7 +109,7 @@ def test_kicad_open_board_missing_source_validation():
     assert result[0].text == "Error: source parameter is required"
 
 
-def test_live_kicad_session_skip_unless_ipc_api_reachable():
+def test_live_kicad_session_skip_unless_ipc_api_reachable() -> None:
     ipc = KiCadIPC(timeout_ms=300)
     try:
         session = ipc.session()
