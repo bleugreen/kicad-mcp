@@ -247,9 +247,12 @@ def analyze_net_route(
 def copper_pad_layers(model: PCBModel, pad: Pad) -> list[str]:
     """Return the copper layers occupied by a pad."""
 
+    layers = [layer for layer in pad.layers if layer.endswith(".Cu")]
+    if layers:
+        return layers
     if "*.Cu" in pad.layers or pad.pad_type in {"thru_hole", "np_thru_hole"}:
         return list(model.copper_layers)
-    return [layer for layer in pad.layers if layer.endswith(".Cu")]
+    return []
 
 
 def arc_length(arc: Arc) -> float:

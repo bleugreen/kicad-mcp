@@ -747,14 +747,9 @@ class PCBModel:
                 b["footprints"] += 1
             for pad in fp.pads:
                 for layer in pad.layers:
-                    # Pads on "*.Cu" appear on every copper layer.
-                    if layer == "*.Cu":
-                        for cu in self.copper_layers:
-                            counts[cu]["pads"] += 1
-                    else:
-                        pb = bucket(layer)
-                        if pb:
-                            pb["pads"] += 1
+                    pb = bucket(layer)
+                    if pb:
+                        pb["pads"] += 1
         for t in self.tracks:
             b = bucket(t.layer)
             if b:
