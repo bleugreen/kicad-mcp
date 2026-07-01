@@ -2,7 +2,11 @@
 mcpServers:
   kicad:
     type: stdio
-    command: uv
+    # Absolute path to uv: Cairn spawns MCP servers as direct child processes
+    # that inherit the host app's PATH, not an interactive shell's. uv lives in
+    # ~/.local/bin (a shell-added dir, absent from the default GUI/launchd PATH),
+    # so a bare `uv` fails to spawn with ENOENT. An absolute path is resolver-independent.
+    command: /Users/mitch/.local/bin/uv
     args:
     - --directory
     - /Users/mitch/projects/kicad-mcp
