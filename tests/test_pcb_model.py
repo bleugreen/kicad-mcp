@@ -37,7 +37,7 @@ def test_layers_and_stackup(model):
 
 
 def test_nets(model):
-    assert model.nets == {0: "", 1: "GND", 2: "VCC", 3: "SIG"}
+    assert model.nets == {0: "", 1: "GND", 2: "VCC", 3: "SIG", 4: "DP_P", 5: "DP_N"}
 
 
 def test_outline_bbox_and_dimensions(model):
@@ -147,7 +147,7 @@ def test_layer_element_counts(model):
     assert set(counts) == {"F.Cu", "B.Cu"}
     assert counts["F.Cu"]["footprints"] == 2  # R1, R2
     assert counts["B.Cu"]["footprints"] == 1  # U1
-    assert counts["F.Cu"]["tracks"] == 1
+    assert counts["F.Cu"]["tracks"] == 4
     assert counts["B.Cu"]["tracks"] == 1
     assert counts["B.Cu"]["zones"] == 1
     # The via spans F.Cu and B.Cu, so it is counted on both.

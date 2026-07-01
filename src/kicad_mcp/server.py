@@ -14,6 +14,12 @@ from .datasheet_lookup import DatasheetFinder
 from . import kicad_cli
 from .kicad_cli import KiCadCLIError
 from .pcb_model import PCBModel, load_pcb_model
+from .pcb_route import (
+    RouteAnalysis,
+    analyze_net_route,
+    resolve_diff_pair,
+    sorted_length_rows,
+)
 
 # PCB tools operate on .kicad_pcb files via kicad-cli, resolving their source
 # through the config, so they bypass the schematic/circuit machinery entirely.
@@ -22,6 +28,10 @@ PCB_CLI_TOOLS = {"pcb_drc", "pcb_render", "pcb_export_layers"}
 # Parsed-model PCB tools query the typed board model (pcb_model) rather than
 # shelling out to kicad-cli; they resolve their source through the same config.
 PCB_MODEL_TOOLS = {"pcb_overview", "pcb_component", "pcb_components_near"}
+
+# Route-analysis PCB tools build on PCBModel copper elements and report routed
+# lengths/connectivity without invoking kicad-cli.
+PCB_ROUTE_TOOLS = {"pcb_net_route", "pcb_diff_pair", "pcb_net_lengths"}
 
 
 class KiCadMCPServer:
@@ -400,6 +410,44 @@ class KiCadMCPServer:
                         "required": ["source", "reference"]
                     }
                 ),
+                types.Tool(
+                    name="pcb_net_route",
+                    description="Analyze one PCB net's routed copper length, layer usage, widths, vias, endpoints, and copper-island connectivity.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "net": {"type": "string", "description": "Net name or net number"}
+                        },
+                        "required": ["source", "net"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_diff_pair",
+                    description="Compare routed lengths for a differential pair. Pass explicit net_p/net_n or pass net_p as the base name using _P/_N or +/- conventions.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "net_p": {"type": "string", "description": "Positive net name, or pair base name when net_n is omitted"},
+                            "net_n": {"type": "string", "description": "Negative net name (optional when net_p is a base name)"}
+                        },
+                        "required": ["source", "net_p"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_net_lengths",
+                    description="List routed lengths for nets whose names match a glob or regular expression, sorted by length for bus matching review.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "pattern": {"type": "string", "description": "Glob or regular expression, e.g. DDR_*"},
+                            "limit": {"type": "integer", "description": "Maximum number of matching nets to report", "default": 50}
+                        },
+                        "required": ["source", "pattern"]
+                    }
+                ),
             ]
 
     async def handle_call_tool(
@@ -418,6 +466,9 @@ class KiCadMCPServer:
 
         if name in PCB_MODEL_TOOLS:
             return self._handle_pcb_model_tool(name, arguments)
+
+        if name in PCB_ROUTE_TOOLS:
+            return self._handle_pcb_route_tool(name, arguments)
 
         try:
             if name == "search_datasheet":
@@ -668,6 +719,42 @@ class KiCadMCPServer:
             )
         return [types.TextContent(type="text", text=result)]
 
+    def _handle_pcb_route_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch route-analysis PCB tools."""
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+        try:
+            model = self._load_pcb(source)
+            if name == "pcb_net_route":
+                net = arguments.get("net")
+                if net is None:
+                    return [types.TextContent(type="text", text="Error: net parameter is required")]
+                result = self._format_pcb_net_route(analyze_net_route(model, net))
+            elif name == "pcb_diff_pair":
+                net_p_arg = arguments.get("net_p")
+                if not net_p_arg:
+                    return [types.TextContent(type="text", text="Error: net_p parameter is required")]
+                net_p, net_n = resolve_diff_pair(model, net_p_arg, arguments.get("net_n"))
+                result = self._format_pcb_diff_pair(
+                    analyze_net_route(model, net_p), analyze_net_route(model, net_n)
+                )
+            else:  # pcb_net_lengths
+                pattern = arguments.get("pattern")
+                if not pattern:
+                    return [types.TextContent(type="text", text="Error: pattern parameter is required")]
+                limit = int(arguments.get("limit", 50))
+                result = self._format_pcb_net_lengths(
+                    pattern, sorted_length_rows(model, pattern, limit), limit
+                )
+            return [types.TextContent(type="text", text=result)]
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
     def _load_pcb(self, source: str) -> PCBModel:
         """Resolve a source to a board file and return its cached parsed model.
 
@@ -771,6 +858,92 @@ class KiCadMCPServer:
         for fp, dist in neighbors:
             lines.append(
                 f"- {fp.reference} ({fp.value}) — {dist:.2f} mm [{fp.side}]"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_net_route(route: RouteAnalysis) -> str:
+        label = route.net_name or f"net {route.net_number}"
+        lines = [f"# Route: {label}", ""]
+        lines.append(f"**Total routed length:** {route.total_length_mm:.6f} mm")
+        lines.append(
+            f"**Elements:** {route.track_count} segment(s), {route.arc_count} arc(s), {route.via_count} via(s)"
+        )
+        lines.append(f"**Layers used:** {', '.join(route.layers_used) if route.layers_used else 'none'}")
+        lines.append(f"**Endpoint pads:** {', '.join(route.endpoints) if route.endpoints else 'none'}")
+
+        status = "connected" if route.copper_island_count <= 1 else "disconnected"
+        if route.connected_only_through_zone:
+            status = "connected only through zone; routed length through pour is undefined"
+        lines.append(
+            f"**Connectivity:** {status} ({route.copper_island_count} measured copper island(s), tolerance {route.tolerance_mm} mm)"
+        )
+        if route.zones:
+            zone_layers = sorted({layer for zone in route.zones for layer in zone.layers})
+            lines.append(
+                f"**Zones:** {len(route.zones)} zone(s) on {', '.join(zone_layers) if zone_layers else 'unknown layers'}; excluded from length math"
+            )
+
+        lines.append("\n## Layer lengths")
+        if route.layer_lengths_mm:
+            for layer, length in route.layer_lengths_mm.items():
+                lines.append(f"- {layer}: {length:.6f} mm")
+        else:
+            lines.append("- none")
+
+        lines.append("\n## Width profile")
+        if route.min_width_mm is None:
+            lines.append("- no routed segments/arcs")
+        else:
+            lines.append(f"- Min/max: {route.min_width_mm:.6f} / {route.max_width_mm:.6f} mm")
+            for width, length in route.width_lengths_mm.items():
+                lines.append(f"- {width:.6f} mm: {length:.6f} mm")
+
+        if route.via_spans:
+            lines.append("\n## Via spans")
+            for span, count in route.via_spans.items():
+                lines.append(f"- {span}: {count}")
+
+        if route.copper_island_count > 1:
+            lines.append("\n## Copper islands")
+            for idx, island in enumerate(route.islands, 1):
+                lines.append(f"- Island {idx}: {island.summary()}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_diff_pair(pos: RouteAnalysis, neg: RouteAnalysis) -> str:
+        mismatch = abs(pos.total_length_mm - neg.total_length_mm)
+        lines = [f"# Differential Pair: {pos.net_name} / {neg.net_name}", ""]
+        lines.append(f"- {pos.net_name}: {pos.total_length_mm:.6f} mm, {pos.via_count} via(s)")
+        lines.append(f"- {neg.net_name}: {neg.total_length_mm:.6f} mm, {neg.via_count} via(s)")
+        lines.append(f"**Length mismatch:** {mismatch:.6f} mm")
+        via_note = "symmetric" if pos.via_count == neg.via_count else "different"
+        lines.append(f"**Via-count symmetry:** {via_note}")
+        p_layers = set(pos.layers_used)
+        n_layers = set(neg.layers_used)
+        if p_layers == n_layers:
+            lines.append(f"**Layer usage:** matched ({', '.join(sorted(p_layers))})")
+        else:
+            lines.append(
+                "**Layer usage differs:** "
+                f"only {pos.net_name}: {', '.join(sorted(p_layers - n_layers)) or 'none'}; "
+                f"only {neg.net_name}: {', '.join(sorted(n_layers - p_layers)) or 'none'}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_net_lengths(
+        pattern: str, rows: list[RouteAnalysis], limit: int
+    ) -> str:
+        lines = [f"# Net Lengths: {pattern}", "", f"Matched {len(rows)} net(s), capped at {limit}.", ""]
+        if not rows:
+            lines.append("No nets matched.")
+            return "\n".join(lines)
+        lines.append("| Net | Length (mm) | Vias | Islands | Layers |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for route in rows:
+            lines.append(
+                f"| {route.net_name} | {route.total_length_mm:.6f} | {route.via_count} | {route.copper_island_count} | {', '.join(route.layers_used)} |"
             )
         return "\n".join(lines)
 
