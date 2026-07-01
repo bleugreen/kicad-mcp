@@ -239,6 +239,17 @@ def _resolve_layer_tokens(tokens: list[str], board_layers: list[str]) -> list[st
     return resolved
 
 
+def _pad_drill_diameter(drill: Any) -> float | None:
+    """Return the visible drill diameter from kiutils pad drill data."""
+
+    if isinstance(drill, int | float):
+        return float(drill)
+    diameter = getattr(drill, "diameter", None)
+    if isinstance(diameter, int | float):
+        return float(diameter)
+    return None
+
+
 def _footprint_silkscreen_graphics(
     fp: Any, fx: float, fy: float, frot: float
 ) -> list[SilkscreenGraphic]:
@@ -325,6 +336,34 @@ def _footprint_silkscreen_graphics(
                 )
             )
     return graphics
+
+
+def _sexpr_symbol_name(value: object) -> str | None:
+    if isinstance(value, sexpdata.Symbol):
+        return value.value()
+    return None
+
+
+def _sexpr_is(value: object, name: str) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and _sexpr_symbol_name(value[0]) == name
+    )
+
+
+def _sexpr_child(items: list[object], name: str) -> list[object] | None:
+    for item in items:
+        if _sexpr_is(item, name):
+            return item
+    return None
+
+
+def _sexpr_float(items: list[object], index: int, default: float) -> float:
+    try:
+        return float(items[index])
+    except (IndexError, TypeError, ValueError):
+        return default
 
 
 class PCBModel:
