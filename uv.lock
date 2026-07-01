@@ -843,6 +843,7 @@ dependencies = [
     { name = "ddgs" },
     { name = "kicad-sch-api" },
     { name = "kinparse" },
+    { name = "kiutils" },
     { name = "mcp" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -867,6 +868,7 @@ requires-dist = [
     { name = "ddgs", specifier = ">=0.1.0" },
     { name = "kicad-sch-api", specifier = ">=0.5.4" },
     { name = "kinparse", specifier = ">=1.2.4" },
+    { name = "kiutils", specifier = ">=1.4.8" },
     { name = "mcp", specifier = ">=0.9.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "networkx", specifier = ">=3.0" },
@@ -906,6 +908,15 @@ dependencies = [
     { name = "pyparsing" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1f/b4/4ea269822cf21e41637540471816b9816723784cd990a84b64aab35bdc7a/kinparse-1.2.4.tar.gz", hash = "sha256:29e9c99996e0d9374a57f82f391638e2a98edcf3581a55f40d04ca2b1954b2a8", size = 56954 }
+
+[[package]]
+name = "kiutils"
+version = "1.4.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/07/04d7a636eaf9f54f6e7cdfc2117843ef4cc6a6360a9866fbd76bc2a0d0dd/kiutils-1.4.8.tar.gz", hash = "sha256:18c5803283e579cfe8772955e7702548d7139e0fc630daa579ed6b2b767db846", size = 84024 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/c0/381ece43b464ce8aff02a327b0d5cdc011b8c0d9a652e245b05e0bb0810a/kiutils-1.4.8-py3-none-any.whl", hash = "sha256:ca7c5c7eafb7bc33daa3d6cfe42cc704be2bcd2206103b28ad2682d88a6072ae", size = 93827 },
+]
 
 [[package]]
 name = "lxml"
