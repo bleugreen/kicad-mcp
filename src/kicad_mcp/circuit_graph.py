@@ -44,6 +44,15 @@ class Netlist:
 class CircuitGraph:
     """Bipartite graph representation of a circuit from KiCad netlist."""
 
+    # Class-level defaults so instances restored via pickle (which bypasses
+    # __init__) still resolve these attributes. Without this, a cache file
+    # written before an attribute existed raises AttributeError when the
+    # staleness check reads it. A None mtime is treated as stale, so such an
+    # object is transparently rebuilt.
+    _filepath: Optional[Path] = None
+    _netlist_path: Optional[Path] = None
+    _load_mtime: Optional[float] = None
+
     def __init__(self):
         """Initialize an empty circuit graph."""
         self.graph = nx.MultiGraph()  # Changed to MultiGraph to handle multiple pins per net
@@ -52,6 +61,7 @@ class CircuitGraph:
         self._net_nodes: Set[Tuple[str, str]] = set()
         self._filepath: Optional[Path] = None
         self._netlist_path: Optional[Path] = None
+        self._load_mtime: Optional[float] = None
 
     @classmethod
     def from_kicad_schematic(cls, filepath: Path, kicad_cli_path: str = None) -> "CircuitGraph":
@@ -130,6 +140,12 @@ class CircuitGraph:
             # Load the exported netlist
             self.load_netlist(self._netlist_path)
 
+            # Stamp source identity/mtime from the schematic (load_netlist set
+            # these to the temporary netlist path), so cache validation tracks
+            # the .kicad_sch the user actually edits.
+            self._filepath = filepath
+            self._load_mtime = filepath.stat().st_mtime
+
         finally:
             # Clean up temporary file
             if self._netlist_path and self._netlist_path.exists():
@@ -145,6 +161,13 @@ class CircuitGraph:
             netlist_path: Path to .net file
         """
         self._netlist_path = netlist_path
+
+        # Track this file as the load source so cache freshness can be checked.
+        # When called from load_schematic, these are re-stamped to the .kicad_sch.
+        netlist_path = Path(netlist_path)
+        self._filepath = netlist_path
+        if netlist_path.exists():
+            self._load_mtime = netlist_path.stat().st_mtime
 
         # Parse netlist with kinparse
         parsed = parse_netlist(str(netlist_path))
@@ -300,6 +323,11 @@ class CircuitGraph:
         ]
         name_upper = net_name.upper()
         return any(pattern in name_upper for pattern in power_patterns)
+
+    def _is_passive_component(self, reference: str) -> bool:
+        """Determine if a component is passive (R, C, L, D, FB)."""
+        prefix = ''.join(c for c in reference if c.isalpha())
+        return prefix in ('R', 'C', 'L', 'D', 'FB')
 
     def _get_component_category(self, reference: str) -> str:
         """Determine component category from reference designator."""
@@ -470,7 +498,7 @@ class CircuitGraph:
 
         return stats
 
-    def get_overview_text(self) -> str:
+    def get_info_text(self) -> str:
         """Generate a human-readable overview of the circuit."""
         stats = self.get_statistics()
 
@@ -599,3 +627,71 @@ class CircuitGraph:
                 for ref, _, _ in components
             ]))
         }
+    def get_full_netlist(self) -> str:
+        """Generate a human-readable full netlist."""
+        if not self.netlist:
+            return "Netlist not loaded."
+
+        lines = ["# Full Netlist\n"]
+
+        # Sort nets: power nets last, then alphabetically
+        sorted_nets = sorted(
+            self.netlist.nets.keys(),
+            key=lambda n: (self._is_power_net(n), n)
+        )
+
+        for net_name in sorted_nets:
+            net_type = "power" if self._is_power_net(net_name) else "signal"
+            lines.append(f"## {net_name} ({net_type}):")
+
+            components_on_net = self.get_components_on_net(net_name)
+
+            # Group pins for multi-pin components on the same net
+            grouped_components = {}
+            for ref, pin, pin_name in components_on_net:
+                if ref not in grouped_components:
+                    grouped_components[ref] = []
+                grouped_components[ref].append((pin, pin_name))
+
+            # Sort components by reference designator
+            sorted_refs = sorted(grouped_components.keys())
+
+            for ref in sorted_refs:
+                comp = self.get_component(ref)
+                if not comp:
+                    continue
+
+                pins = grouped_components[ref]
+                category = comp.get('category')
+
+                # Handle passive components (R, C, L, etc.) differently
+                if category in ['Resistors', 'Capacitors', 'Inductors', 'Diodes', 'Ferrite Beads'] and len(comp.get('pins', {})) == 2:
+                    pin1, pin2 = list(comp.get('pins', {}).keys())
+                    
+                    # Determine which pin is on the current net
+                    current_pin = pins[0][0]
+                    other_pin = pin2 if current_pin == pin1 else pin1
+                    
+                    other_net = self.get_pin_net(ref, other_pin)
+                    
+                    lines.append(f"  - {ref}:{current_pin} ({comp.get('value')}) → {other_net or 'NC'}")
+
+                # Handle multi-pin passives and ICs
+                else:
+                    pin_strs = []
+                    for pin_num, pin_name in pins:
+                        # For ICs, show pin name if available
+                        pin_str = f"{pin_num}"
+                        if category == 'ICs' and pin_name and pin_name != pin_num:
+                            pin_str = f"{pin_name}"
+                        pin_strs.append(pin_str)
+
+                    # For connectors, just list the pins on this net
+                    if category == 'Connectors':
+                         lines.append(f"  - {ref}: {', '.join(pin_strs)}")
+                    # For ICs and other components, list component and pins/names
+                    else:
+                        lines.append(f"  - {ref} ({comp.get('value')}): {', '.join(pin_strs)}")
+            lines.append("")
+
+        return '\n'.join(lines)

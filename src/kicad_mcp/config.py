@@ -5,11 +5,17 @@ import yaml
 import pickle
 import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
-from .circuit_graph_netlist import CircuitGraph
+from .circuit_graph import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
+
+
+# Bump whenever the pickled CircuitGraph shape changes in a way that would make
+# older cache files crash or behave incorrectly. Cache files are tagged with
+# this and rejected (then rebuilt) on mismatch.
+CACHE_VERSION = 2
 
 
 class KiCadMCPConfig:
@@ -25,6 +31,7 @@ class KiCadMCPConfig:
         self.config = self._load_config()
         self.cache_dir = self._setup_cache_dir()
         self._cached_boards: Dict[str, CircuitGraph] = {}
+        self._last_diff: Optional[Dict[str, Any]] = None  # Store last detected diff
 
     def _find_config(self) -> Path:
         """Search for config file with priority order:
@@ -112,6 +119,190 @@ class KiCadMCPConfig:
 
         return cache_mtime > board_mtime
 
+    def _save_cache(self, cache_path: Path, obj: Any) -> None:
+        """Pickle an object to the cache, tagged with the current cache version."""
+        with open(cache_path, 'wb') as f:
+            pickle.dump({"version": CACHE_VERSION, "obj": obj}, f)
+
+    def _load_cache(self, cache_path: Path) -> Optional[Any]:
+        """Load a versioned cache entry, returning None if missing/stale/corrupt.
+
+        Rejects legacy (unversioned) and version-mismatched payloads so that a
+        CircuitGraph shape change can never resurrect an incompatible object.
+        """
+        try:
+            with open(cache_path, 'rb') as f:
+                payload = pickle.load(f)
+        except Exception as e:
+            print(f"Cache load failed: {e}")
+            return None
+
+        if not isinstance(payload, dict) or payload.get("version") != CACHE_VERSION:
+            print(f"Ignoring stale cache (version mismatch): {cache_path.name}")
+            return None
+
+        return payload.get("obj")
+
+    def _compute_diff(self, old_circuit: CircuitGraph, new_circuit: CircuitGraph) -> Dict[str, Any]:
+        """Compute meaningful differences between two circuit versions.
+
+        Args:
+            old_circuit: Previous circuit state
+            new_circuit: New circuit state
+
+        Returns:
+            Dict with categorized changes
+        """
+        diff = {
+            'components_added': [],
+            'components_removed': [],
+            'components_changed': [],
+            'nets_added': [],
+            'nets_removed': [],
+            'connections_changed': []
+        }
+
+        if not old_circuit.netlist or not new_circuit.netlist:
+            return diff
+
+        old_comps = old_circuit.netlist.components
+        new_comps = new_circuit.netlist.components
+        old_nets = old_circuit.netlist.nets
+        new_nets = new_circuit.netlist.nets
+
+        # Component changes
+        old_refs = set(old_comps.keys())
+        new_refs = set(new_comps.keys())
+
+        # Added components
+        for ref in new_refs - old_refs:
+            comp = new_comps[ref]
+            diff['components_added'].append({
+                'ref': ref,
+                'value': comp.value,
+                'footprint': comp.footprint
+            })
+
+        # Removed components
+        for ref in old_refs - new_refs:
+            comp = old_comps[ref]
+            diff['components_removed'].append({
+                'ref': ref,
+                'value': comp.value,
+                'footprint': comp.footprint
+            })
+
+        # Changed components (value or footprint)
+        for ref in old_refs & new_refs:
+            old_comp = old_comps[ref]
+            new_comp = new_comps[ref]
+
+            if old_comp.value != new_comp.value or old_comp.footprint != new_comp.footprint:
+                changes = {'ref': ref}
+                if old_comp.value != new_comp.value:
+                    changes['value'] = {'old': old_comp.value, 'new': new_comp.value}
+                if old_comp.footprint != new_comp.footprint:
+                    changes['footprint'] = {'old': old_comp.footprint, 'new': new_comp.footprint}
+                diff['components_changed'].append(changes)
+
+        # Net changes
+        old_net_names = set(old_nets.keys())
+        new_net_names = set(new_nets.keys())
+
+        # Added nets
+        for net_name in new_net_names - old_net_names:
+            net = new_nets[net_name]
+            diff['nets_added'].append({
+                'name': net_name,
+                'connections': len(net.connections)
+            })
+
+        # Removed nets
+        for net_name in old_net_names - new_net_names:
+            net = old_nets[net_name]
+            diff['nets_removed'].append({
+                'name': net_name,
+                'connections': len(net.connections)
+            })
+
+        # Connection changes (same net, different connections)
+        for net_name in old_net_names & new_net_names:
+            old_conns = set((ref, pin) for ref, pin, _ in old_nets[net_name].connections)
+            new_conns = set((ref, pin) for ref, pin, _ in new_nets[net_name].connections)
+
+            if old_conns != new_conns:
+                added = new_conns - old_conns
+                removed = old_conns - new_conns
+                if added or removed:
+                    diff['connections_changed'].append({
+                        'net': net_name,
+                        'added': list(added),
+                        'removed': list(removed)
+                    })
+
+        return diff
+
+    def _format_diff(self, diff: Dict[str, Any]) -> str:
+        """Format diff as human-readable markdown."""
+        lines = ["## Changes Detected\n"]
+
+        has_changes = False
+
+        if diff['components_added']:
+            has_changes = True
+            for item in diff['components_added']:
+                lines.append(f"- **{item['ref']}**: added ({item['value']})")
+
+        if diff['components_removed']:
+            has_changes = True
+            for item in diff['components_removed']:
+                lines.append(f"- **{item['ref']}**: removed ({item['value']})")
+
+        if diff['components_changed']:
+            has_changes = True
+            for item in diff['components_changed']:
+                if 'value' in item:
+                    lines.append(f"- **{item['ref']}**: {item['value']['old']} → {item['value']['new']}")
+                elif 'footprint' in item:
+                    lines.append(f"- **{item['ref']}**: footprint changed")
+
+        if diff['nets_added']:
+            has_changes = True
+            for item in diff['nets_added']:
+                lines.append(f"- Net **{item['name']}**: added ({item['connections']} connections)")
+
+        if diff['nets_removed']:
+            has_changes = True
+            for item in diff['nets_removed']:
+                lines.append(f"- Net **{item['name']}**: removed")
+
+        if diff['connections_changed']:
+            has_changes = True
+            for item in diff['connections_changed']:
+                if item['added']:
+                    for ref, pin in item['added']:
+                        lines.append(f"- Net **{item['net']}**: {ref}:{pin} connected")
+                if item['removed']:
+                    for ref, pin in item['removed']:
+                        lines.append(f"- Net **{item['net']}**: {ref}:{pin} disconnected")
+
+        if not has_changes:
+            return ""
+
+        return '\n'.join(lines)
+
+    def get_last_diff(self) -> Optional[str]:
+        """Get formatted string of last detected diff, then clear it.
+
+        Returns:
+            Formatted diff string or None if no diff
+        """
+        if self._last_diff:
+            formatted = self._format_diff(self._last_diff)
+            self._last_diff = None
+            return formatted if formatted else None
+        return None
+
     def get_board_path(self, board_name: str) -> Optional[Path]:
         """Get the file path for a named board.
 
@@ -145,6 +336,9 @@ class KiCadMCPConfig:
     def load_board(self, board_name: str, force_reload: bool = False) -> Optional[CircuitGraph]:
         """Load a board by name, using cache if available.
 
+        Auto-reloads if the schematic file has been modified since last load.
+        If changes are detected, stores diff accessible via get_last_diff().
+
         Args:
             board_name: Board identifier from config
             force_reload: Force reload even if cached
@@ -152,27 +346,48 @@ class KiCadMCPConfig:
         Returns:
             CircuitGraph instance or None if board not found
         """
-        # Check memory cache first
-        if not force_reload and board_name in self._cached_boards:
-            return self._cached_boards[board_name]
-
         board_path = self.get_board_path(board_name)
         if not board_path or not board_path.exists():
             print(f"Board '{board_name}' not found in config or file doesn't exist")
             return None
 
-        # Try to load from disk cache
+        # Check memory cache with mtime validation
+        if not force_reload and board_name in self._cached_boards:
+            cached = self._cached_boards[board_name]
+            current_mtime = board_path.stat().st_mtime
+
+            # Check if file has been modified since we loaded it
+            if cached._load_mtime and cached._load_mtime >= current_mtime:
+                return cached  # Cache is fresh
+
+            # File has changed - reload and compute diff
+            print(f"Schematic '{board_name}' has changed, auto-reloading...")
+            new_circuit = CircuitGraph.from_kicad_schematic(board_path)
+
+            # Compute and store diff
+            if new_circuit:
+                self._last_diff = self._compute_diff(cached, new_circuit)
+                self._cached_boards[board_name] = new_circuit
+
+                # Update disk cache if enabled
+                if self.cache_dir:
+                    cache_path = self._get_cache_path(board_path)
+                    try:
+                        self._save_cache(cache_path, new_circuit)
+                    except Exception as e:
+                        print(f"Cache save failed: {e}")
+
+                return new_circuit
+
+        # Try to load from disk cache (only if not in memory)
         if self.cache_dir and not force_reload:
             cache_path = self._get_cache_path(board_path)
             if self._is_cache_valid(board_path, cache_path):
-                try:
-                    with open(cache_path, 'rb') as f:
-                        circuit = pickle.load(f)
+                circuit = self._load_cache(cache_path)
+                if circuit is not None:
                     print(f"Loaded '{board_name}' from cache")
                     self._cached_boards[board_name] = circuit
                     return circuit
-                except Exception as e:
-                    print(f"Cache load failed: {e}")
 
         # Load from schematic
         print(f"Loading '{board_name}' from {board_path}")
@@ -182,8 +397,7 @@ class KiCadMCPConfig:
         if self.cache_dir and circuit:
             cache_path = self._get_cache_path(board_path)
             try:
-                with open(cache_path, 'wb') as f:
-                    pickle.dump(circuit, f)
+                self._save_cache(cache_path, circuit)
                 print(f"Cached '{board_name}' for faster loading")
             except Exception as e:
                 print(f"Cache save failed: {e}")

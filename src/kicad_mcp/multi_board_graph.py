@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple
 import re
 import networkx as nx
-from .circuit_graph_netlist import CircuitGraph
+from .circuit_graph import CircuitGraph
 
 
 class MultiBoardGraph:

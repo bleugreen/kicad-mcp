@@ -1,0 +1,41 @@
+# Cairn Project Configuration
+#
+# This file configures how Cairn works with this project.
+# It can be committed to version control to share settings with your team.
+#
+# Worktree population: control which gitignored content is pre-populated.
+# Paths matching 'copy' patterns are copied (isolated per worktree).
+# Paths matching 'symlink' patterns are symlinked (shared with main repo).
+# Unmatched paths are skipped — setup commands handle the rest.
+#
+# worktree:
+#   populate:
+#     copy:
+#       - ".env"
+#       - ".env.*"
+#     symlink:
+#       - "target/"
+#       - ".cache/"
+
+# Commands to run when setting up a new worktree
+# setupCommands:
+#   - npm install
+
+# Quick-access terminal commands
+# terminalCommands:
+#   - name: Dev Server
+#     command: npm run dev
+#   - name: Tests (watch)
+#     command: npm test -- --watch
+
+# Default branch for the project (defaults to 'main')
+# defaultBranch: main
+
+# External reference repositories and directories
+# references:
+#   - name: docs
+#     git: https://github.com/org/docs.git
+#     description: Project documentation
+#   - name: specs
+#     path: ~/Documents/specs
+#     description: Hardware specifications

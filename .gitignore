@@ -181,3 +181,4 @@ Temporary Items
 *.kicad_pcb
 *.kicad_pro
 .kicad_mcp.yaml
+.cairn/assets/
