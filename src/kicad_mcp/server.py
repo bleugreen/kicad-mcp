@@ -1,7 +1,7 @@
 "KiCad MCP Server with circuit graph functionality."
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
