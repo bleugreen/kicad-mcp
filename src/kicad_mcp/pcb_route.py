@@ -214,7 +214,9 @@ def analyze_net_route(
         islands_by_root.values(),
         key=lambda island: (not island.pads, sorted(island.pads), -island.tracks),
     )
-    island_layers = set().union(*(island.layers for island in islands)) if islands else set()
+    island_layers = (
+        set().union(*(island.layers for island in islands)) if islands else set()
+    )
     via_layers = {layer for via in vias for layer in via.layers}
     layers_used = sorted(set(layer_lengths) | via_layers | island_layers)
     copper_islands = len(islands)
