@@ -17,7 +17,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from .pcb_model import Arc, PCBModel, Pad, Point, Track, Via, Zone
+from .pcb_model import Arc, Pad, PCBModel, Point, Track, Via, Zone
 
 JOIN_TOLERANCE_MM = 0.15
 
