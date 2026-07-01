@@ -64,7 +64,7 @@ def test_kicad_session_unreachable_error_shape() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_session", {}))
 
-    text = result[0].text
+    text = getattr(result[0], "text")
     assert text.startswith("Error:")
     assert "Attempted socket: ipc:///tmp/kicad/api.sock" in text
     assert "Enable KiCad API" in text
@@ -89,7 +89,7 @@ def test_focus_argument_validation_returns_clean_error() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_focus", {}))
 
-    assert result[0].text == "Error: Pass exactly one of reference or position"
+    assert getattr(result[0], "text") == "Error: Pass exactly one of reference or position"
 
 
 def test_box_contains_kipy_style_pos_size_box() -> None:
@@ -106,7 +106,7 @@ def test_kicad_open_board_missing_source_validation() -> None:
 
     result = asyncio.run(server.handle_call_tool("kicad_open_board", {}))
 
-    assert result[0].text == "Error: source parameter is required"
+    assert getattr(result[0], "text") == "Error: source parameter is required"
 
 
 def test_live_kicad_session_skip_unless_ipc_api_reachable() -> None:

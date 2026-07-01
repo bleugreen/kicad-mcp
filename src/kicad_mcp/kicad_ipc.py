@@ -410,7 +410,12 @@ def _box_contains(box: Any, x_nm: int, y_nm: int) -> bool:
     right = getattr(box, "right", None)
     top = getattr(box, "top", None)
     bottom = getattr(box, "bottom", None)
-    if left is not None and right is not None and top is not None and bottom is not None:
+    if (
+        left is not None
+        and right is not None
+        and top is not None
+        and bottom is not None
+    ):
         lo_x, hi_x = sorted((int(left), int(right)))
         lo_y, hi_y = sorted((int(top), int(bottom)))
         return bool(lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y)
