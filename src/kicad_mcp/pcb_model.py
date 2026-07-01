@@ -453,7 +453,9 @@ class PCBModel:
 
             pads: list[Pad] = []
             for pad in fp.pads:
-                pad_position = _position_relative_to_footprint(fx, fy, frot, pad.position)
+                pad_position = _position_relative_to_footprint(
+                    fx, fy, frot, pad.position
+                )
                 net_number = pad.net.number if pad.net is not None else None
                 net_name = pad.net.name if pad.net is not None else None
                 pad_angle = float(pad.position.angle or 0.0)
@@ -497,7 +499,9 @@ class PCBModel:
                     position=Point(fx, fy),
                     rotation=frot,
                     pads=pads,
-                    silkscreen_graphics=_footprint_silkscreen_graphics(fp, fx, fy, frot),
+                    silkscreen_graphics=_footprint_silkscreen_graphics(
+                        fp, fx, fy, frot
+                    ),
                     reference_text=reference_text,
                 )
             )
@@ -619,9 +623,16 @@ class PCBModel:
                     continue
                 at = _sexpr_child(child, "at")
                 layer_expr = _sexpr_child(child, "layer")
-                if at is None or len(at) < 3 or layer_expr is None or len(layer_expr) < 2:
+                if (
+                    at is None
+                    or len(at) < 3
+                    or layer_expr is None
+                    or len(layer_expr) < 2
+                ):
                     continue
-                dx, dy = _rotate_pad(_sexpr_float(at, 1, 0.0), _sexpr_float(at, 2, 0.0), frot)
+                dx, dy = _rotate_pad(
+                    _sexpr_float(at, 1, 0.0), _sexpr_float(at, 2, 0.0), frot
+                )
                 specs[child[2]] = SilkscreenText(
                     text=child[2],
                     layer=str(layer_expr[1]),

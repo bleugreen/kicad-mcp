@@ -410,7 +410,9 @@ def _draw_silkscreen_graphic(
             draw.ellipse(box, fill=color)
         draw.ellipse(box, outline=color, width=width)
     elif graphic.kind == "arc" and len(graphic.points) == 3:
-        arc_points = [transform.point(p) for p in _arc_points_from_three(*graphic.points)]
+        arc_points = [
+            transform.point(p) for p in _arc_points_from_three(*graphic.points)
+        ]
         if len(arc_points) > 1:
             draw.line(arc_points, fill=color, width=width)
 
