@@ -16,7 +16,6 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from .pcb_model import Arc, PCBModel, Pad, Point, Track, Via, Zone
 
@@ -163,7 +162,7 @@ def analyze_net_route(
         via_node_ids = [
             add_node(via.position, layer, "via", f"via {idx}") for layer in via.layers
         ]
-        for first, other in zip(via_node_ids, via_node_ids[1:]):
+        for first, other in zip(via_node_ids, via_node_ids[1:], strict=False):
             uf.union(first, other)
         element_roots[f"via:{idx}"].extend(via_node_ids)
         via_spans[" ↔ ".join(via.layers)] += 1
@@ -174,7 +173,7 @@ def analyze_net_route(
         endpoints.append(label)
         pad_layers = copper_pad_layers(model, pad)
         ids = [add_node(pad.position, layer, "pad", label) for layer in pad_layers]
-        for first, other in zip(ids, ids[1:]):
+        for first, other in zip(ids, ids[1:], strict=False):
             uf.union(first, other)
         element_roots[f"pad:{label}"].extend(ids)
 
@@ -204,7 +203,8 @@ def analyze_net_route(
             if not key.startswith(kind + ":") or not roots:
                 continue
             root = uf.find(roots[0])
-            setattr(islands_by_root[root], count_attr, getattr(islands_by_root[root], count_attr) + 1)
+            current = getattr(islands_by_root[root], count_attr)
+            setattr(islands_by_root[root], count_attr, current + 1)
 
     bump("track", "tracks")
     bump("arc", "arcs")
@@ -214,13 +214,9 @@ def analyze_net_route(
         islands_by_root.values(),
         key=lambda island: (not island.pads, sorted(island.pads), -island.tracks),
     )
-    layers_used = sorted(
-        set(layer_lengths) | {layer for via in vias for layer in via.layers} | set().union(
-            *(island.layers for island in islands)
-        )
-        if islands
-        else set(layer_lengths)
-    )
+    island_layers = set().union(*(island.layers for island in islands)) if islands else set()
+    via_layers = {layer for via in vias for layer in via.layers}
+    layers_used = sorted(set(layer_lengths) | via_layers | island_layers)
     copper_islands = len(islands)
     connected_only_through_zone = copper_islands > 1 and bool(zones)
 
@@ -302,12 +298,15 @@ def matching_net_names(model: PCBModel, pattern: str, limit: int = 50) -> list[s
     matches = [
         name
         for name in names
-        if fnmatch.fnmatchcase(name, pattern) or (regex is not None and regex.search(name))
+        if fnmatch.fnmatchcase(name, pattern)
+        or (regex is not None and regex.search(name))
     ]
     return matches[:limit]
 
 
-def resolve_diff_pair(model: PCBModel, net_p: str, net_n: str | None = None) -> tuple[str, str]:
+def resolve_diff_pair(
+    model: PCBModel, net_p: str, net_n: str | None = None
+) -> tuple[str, str]:
     """Resolve explicit or base-name differential-pair arguments."""
 
     if net_n:
@@ -334,11 +333,14 @@ def resolve_diff_pair(model: PCBModel, net_p: str, net_n: str | None = None) -> 
         )
 
     for p_name, n_name in candidates:
-        if model.net_number(p_name) is not None and model.net_number(n_name) is not None:
+        p_exists = model.net_number(p_name) is not None
+        n_exists = model.net_number(n_name) is not None
+        if p_exists and n_exists:
             return p_name, n_name
 
     raise ValueError(
-        f"Could not resolve differential pair from {net_p!r}; pass explicit net_p and net_n"
+        f"Could not resolve differential pair from {net_p!r}; "
+        "pass explicit net_p and net_n"
     )
 
 
@@ -352,5 +354,8 @@ def sorted_length_rows(
 ) -> list[RouteAnalysis]:
     """Analyze all matching nets and return them sorted by length descending."""
 
-    analyses = [analyze_net_route(model, name) for name in matching_net_names(model, pattern, limit)]
+    analyses = [
+        analyze_net_route(model, name)
+        for name in matching_net_names(model, pattern, limit)
+    ]
     return sorted(analyses, key=lambda item: item.total_length_mm, reverse=True)
