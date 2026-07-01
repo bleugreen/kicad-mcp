@@ -155,16 +155,23 @@ board-area-fitted per-layer SVGs) can call them directly.
 ### PCB Layout (parsed model)
 
 These tools read a typed, in-memory model of the `.kicad_pcb` (placement, copper,
-stackup) parsed with the pure-Python `kiutils` library and cached per
-`(path, mtime)` — no `kicad-cli` process. Their `source` resolves through
-`KiCadMCPConfig.resolve_pcb_source` (a configured board's `pcb` path or a direct
-`.kicad_pcb` path). The queryable model lives in `kicad_mcp.pcb_model`.
+stackup, pads, tracks, vias, zones) parsed with the pure-Python `kiutils` library
+and cached per `(path, mtime)` — no `kicad-cli` process. Their `source` resolves
+through `KiCadMCPConfig.resolve_pcb_source` (a configured board's `pcb` path, a
+direct `.kicad_pcb` path, or a `.kicad_sch` sibling). The queryable model lives
+in `kicad_mcp.pcb_model`; direct 2D PNG rendering lives in
+`kicad_mcp.pcb_rendering`.
 
 | Tool | Description |
 |------|-------------|
 | `pcb_overview` | Board dimensions, layer/stackup summary, footprint/track/via/zone counts, net count, and top nets by copper element count |
 | `pcb_component` | A component's placement (position, side, rotation), footprint id, and pads with their nets |
 | `pcb_components_near` | Footprints placed within a radius (mm) of a component, with distances |
+| `pcb_net_route` | Routed copper length, layer usage, widths, vias, endpoints, and copper-island connectivity for one net |
+| `pcb_diff_pair` | Length and via-count comparison for a differential pair, with pair-name inference for common `_P`/`_N` and `+`/`-` conventions |
+| `pcb_net_lengths` | Sorted routed lengths for nets matching a glob or regular expression |
+| `pcb_crop` | Inline PNG crop of a component, a net's copper bounds, or an explicit board-coordinate window; returns MCP ImageContent plus the saved path |
+| `pcb_highlight_net` | Inline PNG with one net drawn bright over dimmed board copper, including lower-alpha zones; returns MCP ImageContent plus the saved path |
 
 ## Usage Examples
 

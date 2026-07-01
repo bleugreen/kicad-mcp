@@ -82,6 +82,24 @@ def test_pad_absolute_positions(model):
     assert r2_pads["2"].position.y == pytest.approx(109.2)
 
 
+def test_pad_and_zone_render_geometry(model):
+    r2_pad = next(p for p in model.footprint("R2").pads if p.number == "1")
+    assert r2_pad.shape == "roundrect"
+    assert r2_pad.size.x == pytest.approx(0.9)
+    assert r2_pad.size.y == pytest.approx(0.95)
+    assert r2_pad.rotation == pytest.approx(90.0)
+
+    zone = model.net_copper_elements("GND")["zones"][0]
+    assert zone.filled_polygon_count == 1
+    assert len(zone.polygons) == 1
+    assert [(p.x, p.y) for p in zone.polygons[0]] == [
+        (101.0, 101.0),
+        (149.0, 101.0),
+        (149.0, 129.0),
+        (101.0, 129.0),
+    ]
+
+
 def test_footprints_near(model):
     # U1 is sqrt(200) ~= 14.14 mm from R1; R2 is exactly 20 mm.
     near_15 = model.footprints_near("R1", 15.0)

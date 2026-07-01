@@ -11,7 +11,7 @@ from .circuit_graph import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
-from . import kicad_cli
+from . import kicad_cli, pcb_rendering
 from .kicad_cli import KiCadCLIError
 from .pcb_model import PCBModel, load_pcb_model
 from .pcb_route import (
@@ -32,6 +32,9 @@ PCB_MODEL_TOOLS = {"pcb_overview", "pcb_component", "pcb_components_near"}
 # Route-analysis PCB tools build on PCBModel copper elements and report routed
 # lengths/connectivity without invoking kicad-cli.
 PCB_ROUTE_TOOLS = {"pcb_net_route", "pcb_diff_pair", "pcb_net_lengths"}
+
+# PCB image tools render directly from PCBModel geometry to PNG ImageContent.
+PCB_IMAGE_TOOLS = {"pcb_crop", "pcb_highlight_net"}
 
 
 class KiCadMCPServer:
@@ -448,6 +451,116 @@ class KiCadMCPServer:
                         "required": ["source", "pattern"]
                     }
                 ),
+                types.Tool(
+                    name="pcb_crop",
+                    description=(
+                        "Render a 2D PNG crop of a PCB region as ImageContent. "
+                        "Select exactly one target: reference plus margin_mm, "
+                        "net plus margin_mm, or explicit x_mm/y_mm/width_mm/height_mm. "
+                        "Layers default to the target side copper plus silkscreen "
+                        "and Edge.Cuts for reference crops, or all "
+                        "copper plus Edge.Cuts otherwise."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name, .kicad_pcb path, or sibling .kicad_sch",
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator to crop around",
+                            },
+                            "net": {"description": "Net name or number to crop around"},
+                            "x_mm": {
+                                "type": "number",
+                                "description": "Explicit crop origin X in board millimetres",
+                            },
+                            "y_mm": {
+                                "type": "number",
+                                "description": "Explicit crop origin Y in board millimetres",
+                            },
+                            "width_mm": {
+                                "type": "number",
+                                "description": "Explicit crop width in millimetres",
+                            },
+                            "height_mm": {
+                                "type": "number",
+                                "description": "Explicit crop height in millimetres",
+                            },
+                            "margin_mm": {
+                                "type": "number",
+                                "description": "Margin around reference/net crop",
+                                "default": 5.0,
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Layer names, e.g. ['F.Cu','Edge.Cuts']",
+                            },
+                            "width_px": {
+                                "type": "integer",
+                                "description": "Long-edge pixel target capped at 1600",
+                                "default": 1200,
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "PNG output directory; defaults to a temp dir",
+                            },
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_highlight_net",
+                    description=(
+                        "Render a 2D PNG with one net's tracks, vias, pads, and "
+                        "zones drawn bright over a dimmed board. Defaults to the "
+                        "whole board and all copper layers."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name, .kicad_pcb path, or sibling .kicad_sch",
+                            },
+                            "net": {"description": "Net name or number to highlight"},
+                            "x_mm": {
+                                "type": "number",
+                                "description": "Optional bbox origin X in board millimetres",
+                            },
+                            "y_mm": {
+                                "type": "number",
+                                "description": "Optional bbox origin Y in board millimetres",
+                            },
+                            "width_mm": {
+                                "type": "number",
+                                "description": "Optional bbox width in millimetres",
+                            },
+                            "height_mm": {
+                                "type": "number",
+                                "description": "Optional bbox height in millimetres",
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Layer names, e.g. ['F.Cu','B.Cu','Edge.Cuts']",
+                            },
+                            "width_px": {
+                                "type": "integer",
+                                "description": "Long-edge pixel target capped at 1600",
+                                "default": 1200,
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "PNG output directory; defaults to a temp dir",
+                            },
+                        },
+                        "required": ["source", "net"]
+                    }
+                ),
             ]
 
     async def handle_call_tool(
@@ -469,6 +582,9 @@ class KiCadMCPServer:
 
         if name in PCB_ROUTE_TOOLS:
             return self._handle_pcb_route_tool(name, arguments)
+
+        if name in PCB_IMAGE_TOOLS:
+            return self._handle_pcb_image_tool(name, arguments)
 
         try:
             if name == "search_datasheet":
@@ -750,6 +866,72 @@ class KiCadMCPServer:
                     pattern, sorted_length_rows(model, pattern, limit), limit
                 )
             return [types.TextContent(type="text", text=result)]
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
+    def _handle_pcb_image_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch PCB image tools (crop/highlight) backed by direct rendering."""
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+
+        try:
+            model = self._load_pcb(source)
+            if name == "pcb_crop":
+                result = pcb_rendering.render_crop(
+                    model,
+                    reference=arguments.get("reference"),
+                    net=arguments.get("net"),
+                    x_mm=arguments.get("x_mm"),
+                    y_mm=arguments.get("y_mm"),
+                    width_mm=arguments.get("width_mm"),
+                    height_mm=arguments.get("height_mm"),
+                    margin_mm=arguments.get("margin_mm", 5.0),
+                    layers=arguments.get("layers"),
+                    width_px=arguments.get("width_px", 1200),
+                    output_dir=arguments.get("output_dir"),
+                )
+                title = "PCB Crop"
+            elif name == "pcb_highlight_net":
+                if "net" not in arguments:
+                    return [
+                        types.TextContent(
+                            type="text", text="Error: net parameter is required"
+                        )
+                    ]
+                result = pcb_rendering.render_highlight_net(
+                    model,
+                    net=arguments.get("net"),
+                    x_mm=arguments.get("x_mm"),
+                    y_mm=arguments.get("y_mm"),
+                    width_mm=arguments.get("width_mm"),
+                    height_mm=arguments.get("height_mm"),
+                    layers=arguments.get("layers"),
+                    width_px=arguments.get("width_px", 1200),
+                    output_dir=arguments.get("output_dir"),
+                )
+                title = f"PCB Net Highlight: {arguments.get('net')}"
+            else:
+                return [
+                    types.TextContent(
+                        type="text", text=f"Unknown PCB image tool: {name}"
+                    )
+                ]
+
+            return [
+                types.ImageContent(
+                    type="image",
+                    data=result.image_base64,
+                    mimeType="image/png",
+                ),
+                types.TextContent(
+                    type="text", text=pcb_rendering.result_caption(title, result)
+                ),
+            ]
         except (ValueError, FileNotFoundError) as e:
             return [types.TextContent(type="text", text=f"Error: {e}")]
         except Exception as e:

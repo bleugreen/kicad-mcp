@@ -61,6 +61,10 @@ class Pad:
     net_name: str | None
     position: Point
     pad_type: str  # smd | thru_hole | np_thru_hole | connect
+    shape: str | None = None
+    size: Point | None = None
+    rotation: float = 0.0
+    drill: float | None = None
     layers: list[str] = field(default_factory=list)
 
 
@@ -78,7 +82,7 @@ class Footprint:
 
     @property
     def side(self) -> str:
-        """"top" for front-side placement, "bottom" for back-side."""
+        """ "top" for front-side placement, "bottom" for back-side."""
         return "bottom" if self.layer.startswith("B.") else "top"
 
 
@@ -124,6 +128,7 @@ class Zone:
     net_name: str
     layers: list[str] = field(default_factory=list)
     filled_polygon_count: int = 0
+    polygons: list[list[Point]] = field(default_factory=list)
 
 
 @dataclass
@@ -201,9 +206,7 @@ class PCBModel:
         self.nets = nets or {}
         self._edge_points = edge_points or []
         self._by_ref = {fp.reference: fp for fp in self.footprints}
-        self._name_to_number = {
-            name: num for num, name in self.nets.items() if name
-        }
+        self._name_to_number = {name: num for num, name in self.nets.items() if name}
 
     # -- construction --------------------------------------------------------
 
@@ -256,11 +259,12 @@ class PCBModel:
 
             pads: list[Pad] = []
             for pad in fp.pads:
-                dx, dy = _rotate_pad(
-                    float(pad.position.X), float(pad.position.Y), frot
-                )
+                dx, dy = _rotate_pad(float(pad.position.X), float(pad.position.Y), frot)
                 net_number = pad.net.number if pad.net is not None else None
                 net_name = pad.net.name if pad.net is not None else None
+                pad_angle = float(pad.position.angle or 0.0)
+                pad_size = getattr(pad, "size", None)
+                pad_drill = getattr(pad, "drill", None)
                 pads.append(
                     Pad(
                         number=pad.number,
@@ -268,6 +272,18 @@ class PCBModel:
                         net_name=net_name,
                         position=Point(fx + dx, fy + dy),
                         pad_type=pad.type,
+                        shape=getattr(pad, "shape", None),
+                        size=(
+                            Point(float(pad_size.X), float(pad_size.Y))
+                            if pad_size is not None
+                            else None
+                        ),
+                        rotation=frot + pad_angle,
+                        drill=(
+                            float(pad_drill)
+                            if isinstance(pad_drill, int | float)
+                            else None
+                        ),
                         layers=list(pad.layers or []),
                     )
                 )
@@ -328,12 +344,23 @@ class PCBModel:
             zlayers = list(z.layers or [])
             if not zlayers and getattr(z, "layer", None):
                 zlayers = [z.layer]
+            polygons: list[list[Point]] = []
+            for poly in (
+                getattr(z, "filledPolygons", None) or getattr(z, "polygons", []) or []
+            ):
+                coords = getattr(poly, "coordinates", []) or []
+                points = [
+                    Point(float(p.X), float(p.Y)) for p in coords if hasattr(p, "X")
+                ]
+                if points:
+                    polygons.append(points)
             zones.append(
                 Zone(
                     net=z.net,
                     net_name=z.netName or "",
                     layers=zlayers,
                     filled_polygon_count=len(z.filledPolygons or []),
+                    polygons=polygons,
                 )
             )
 
