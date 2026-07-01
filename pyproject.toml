@@ -33,6 +33,9 @@ dependencies = [
     "kinparse>=1.2.4",
     "pyyaml>=6.0",
     "ddgs>=0.1.0",
+    "kiutils>=1.4.8",
+    "pillow>=12.3.0",
+    "kicad-python>=0.7.1",
 ]
 
 [project.optional-dependencies]

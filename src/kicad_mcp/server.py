@@ -1,8 +1,7 @@
 "KiCad MCP Server with circuit graph functionality."
 
-import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 import mcp.server.stdio
@@ -12,6 +11,40 @@ from .circuit_graph import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
+from . import kicad_cli, pcb_rendering
+from .kicad_cli import KiCadCLIError
+from .kicad_ipc import KiCadIPC, KiCadIPCError, format_selection, format_session
+from .pcb_model import PCBModel, load_pcb_model
+from .pcb_route import (
+    RouteAnalysis,
+    analyze_net_route,
+    resolve_diff_pair,
+    sorted_length_rows,
+)
+
+# PCB tools operate on .kicad_pcb files via kicad-cli, resolving their source
+# through the config, so they bypass the schematic/circuit machinery entirely.
+PCB_CLI_TOOLS = {"pcb_drc", "pcb_render", "pcb_export_layers"}
+
+# Parsed-model PCB tools query the typed board model (pcb_model) rather than
+# shelling out to kicad-cli; they resolve their source through the same config.
+PCB_MODEL_TOOLS = {"pcb_overview", "pcb_component", "pcb_components_near"}
+
+# Route-analysis PCB tools build on PCBModel copper elements and report routed
+# lengths/connectivity without invoking kicad-cli.
+PCB_ROUTE_TOOLS = {"pcb_net_route", "pcb_diff_pair", "pcb_net_lengths"}
+
+# PCB image tools render directly from PCBModel geometry to PNG ImageContent.
+PCB_IMAGE_TOOLS = {"pcb_crop", "pcb_highlight_net"}
+
+# Live-session tools talk to a running KiCad GUI through the official IPC API.
+KICAD_IPC_TOOLS = {
+    "kicad_session",
+    "kicad_focus",
+    "kicad_highlight_net",
+    "kicad_get_selection",
+    "kicad_open_board",
+}
 
 
 class KiCadMCPServer:
@@ -24,7 +57,7 @@ class KiCadMCPServer:
         self.circuits: Dict[str, CircuitGraph] = {}  # Cache loaded circuits
         self.systems: Dict[str, MultiBoardGraph] = {}  # Cache loaded systems
         self.datasheet_finder = DatasheetFinder(self.config.cache_dir)  # Datasheet lookup
-        self._file_path_diff: Optional[str] = None  # Store diff for file path loads
+        self.kicad_ipc = KiCadIPC(self.config)
         self.setup_handlers()
         self.server.call_tool()(self.handle_call_tool)
 
@@ -35,210 +68,6 @@ class KiCadMCPServer:
         async def handle_list_tools() -> list[types.Tool]:
             """List available tools."""
             return [
-                types.Tool(
-                    name="get_overview",
-                    description="Get a comprehensive overview of the schematic, including statistics and the full netlist.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="get_info",
-                    description="Get high-level metadata and statistics for a KiCad schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="list_components",
-                    description="List all components in the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "category": {
-                                "type": "string",
-                                "description": "Optional: Filter by category (e.g., 'ICs', 'Resistors')"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="search_components",
-                    description="Search for components by field value (e.g., value, manufacturer, footprint)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "field": {
-                                "type": "string",
-                                "description": "Field to search (e.g., 'value', 'footprint', 'Manufacturer', 'MPN')"
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "Search query (supports partial matching, case-insensitive)"
-                            }
-                        },
-                        "required": ["source", "field", "query"]
-                    }
-                ),
-                types.Tool(
-                    name="list_nets",
-                    description="List all nets in the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "power_only": {
-                                "type": "boolean",
-                                "description": "Only show power nets",
-                                "default": False
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="get_netlist",
-                    description="Get a full netlist view of the schematic",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            }
-                        },
-                        "required": ["source"]
-                    }
-                ),
-                types.Tool(
-                    name="examine_component",
-                    description="Get detailed information about a specific component",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference (e.g., 'IC2', 'R1')"
-                            }
-                        },
-                        "required": ["source", "reference"]
-                    }
-                ),
-                types.Tool(
-                    name="examine_net",
-                    description="Get detailed information about a specific net",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "net_name": {
-                                "type": "string",
-                                "description": "Net name (e.g., 'GND', 'VCC')"
-                            }
-                        },
-                        "required": ["source", "net_name"]
-                    }
-                ),
-                types.Tool(
-                    name="trace_connection",
-                    description="Find the connection path between two components",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "start_ref": {
-                                "type": "string",
-                                "description": "Starting component reference"
-                            },
-                            "end_ref": {
-                                "type": "string",
-                                "description": "Ending component reference"
-                            }
-                        },
-                        "required": ["source", "start_ref", "end_ref"]
-                    }
-                ),
-                types.Tool(
-                    name="find_connected_components",
-                    description="Find all components connected to a given component within N hops",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference"
-                            },
-                            "max_hops": {
-                                "type": "integer",
-                                "description": "Maximum number of hops",
-                                "default": 2
-                            }
-                        },
-                        "required": ["source", "reference"]
-                    }
-                ),
-                types.Tool(
-                    name="check_pin_connection",
-                    description="Check what net a specific component pin is connected to",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "description": "Board name from config (e.g., 'main', 'sense') OR path to .kicad_sch file"
-                            },
-                            "reference": {
-                                "type": "string",
-                                "description": "Component reference"
-                            },
-                            "pin_number": {
-                                "type": "string",
-                                "description": "Pin number"
-                            }
-                        },
-                        "required": ["source", "reference", "pin_number"]
-                    }
-                ),
                 types.Tool(
                     name="search_datasheet",
                     description="Search for component datasheet URL using manufacturer and part number",
@@ -372,6 +201,10 @@ class KiCadMCPServer:
                                 "type": "string",
                                 "description": "Board description (optional)",
                                 "default": ""
+                            },
+                            "pcb": {
+                                "type": "string",
+                                "description": "Path to the .kicad_pcb layout file (optional)"
                             }
                         },
                         "required": ["name", "path"]
@@ -429,6 +262,363 @@ class KiCadMCPServer:
                         "required": ["name"]
                     }
                 ),
+                types.Tool(
+                    name="pcb_drc",
+                    description=(
+                        "Run headless Design Rule Check on a PCB and return "
+                        "violations grouped by rule with severities, mm "
+                        "coordinates, totals, and the JSON report path. "
+                        "Fails closed (explicit error) if the run fails rather "
+                        "than reporting a false clean pass."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "severity": {
+                                "type": "string",
+                                "description": "Filter: all, error, warning, or exclusion",
+                                "enum": ["all", "error", "warning", "exclusion"],
+                                "default": "all"
+                            },
+                            "max_violations": {
+                                "type": "integer",
+                                "description": "Cap the number of individual violations listed (totals stay exact)"
+                            }
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_render",
+                    description=(
+                        "Render a PCB in 3D to a PNG and return the image plus "
+                        "the saved file path. Supports camera controls: side, "
+                        "zoom, rotate, pan, pivot, perspective, floor."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "side": {
+                                "type": "string",
+                                "description": "Camera side",
+                                "enum": ["top", "bottom", "left", "right", "front", "back"],
+                                "default": "top"
+                            },
+                            "width": {"type": "integer", "description": "Image width in px", "default": 1600},
+                            "height": {"type": "integer", "description": "Image height in px", "default": 900},
+                            "quality": {
+                                "type": "string",
+                                "description": "Render quality",
+                                "enum": ["basic", "high", "user", "job_settings"],
+                                "default": "basic"
+                            },
+                            "background": {
+                                "type": "string",
+                                "description": "Background: default, transparent, or opaque",
+                                "enum": ["default", "transparent", "opaque"]
+                            },
+                            "zoom": {"type": "number", "description": "Camera zoom (default 1)"},
+                            "rotate": {"type": "string", "description": "Rotate board 'X,Y,Z' e.g. '-45,0,45' for isometric"},
+                            "pan": {"type": "string", "description": "Pan camera 'X,Y,Z'"},
+                            "pivot": {"type": "string", "description": "Pivot point relative to board center in cm 'X,Y,Z'"},
+                            "perspective": {"type": "boolean", "description": "Use perspective projection", "default": False},
+                            "floor": {"type": "boolean", "description": "Enable floor, shadows, post-processing", "default": False}
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_export_layers",
+                    description=(
+                        "Export one SVG per PCB layer (e.g. F.Cu,B.Cu,Edge.Cuts) "
+                        "and return the generated file paths. Defaults to "
+                        "board-area fit for downstream cropping."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Untranslated layer names, e.g. ['F.Cu','B.Cu','Edge.Cuts']"
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "Directory to write SVGs into (default: a per-run temp dir)"
+                            },
+                            "fit": {
+                                "type": "string",
+                                "description": "Page sizing: board (board area only), page (framed page), or current",
+                                "enum": ["board", "page", "current"],
+                                "default": "board"
+                            },
+                            "black_and_white": {"type": "boolean", "description": "Plot black and white only", "default": False}
+                        },
+                        "required": ["source", "layers"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_overview",
+                    description="Get a PCB layout overview: board dimensions, layer/stackup summary, footprint/track/via/zone counts, net count, and top nets by copper element count.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            }
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_component",
+                    description="Get a component's PCB placement (position, side, rotation), footprint id, and pads with their nets.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator (e.g., 'R1', 'U3')"
+                            }
+                        },
+                        "required": ["source", "reference"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_components_near",
+                    description="Find footprints placed within a radius (mm) of a given component, with distances.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to a .kicad_pcb file"
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator to search around"
+                            },
+                            "radius_mm": {
+                                "type": "number",
+                                "description": "Search radius in millimetres",
+                                "default": 5.0
+                            }
+                        },
+                        "required": ["source", "reference"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_net_route",
+                    description="Analyze one PCB net's routed copper length, layer usage, widths, vias, endpoints, and copper-island connectivity.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "net": {"type": "string", "description": "Net name or net number"}
+                        },
+                        "required": ["source", "net"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_diff_pair",
+                    description="Compare routed lengths for a differential pair. Pass explicit net_p/net_n or pass net_p as the base name using _P/_N or +/- conventions.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "net_p": {"type": "string", "description": "Positive net name, or pair base name when net_n is omitted"},
+                            "net_n": {"type": "string", "description": "Negative net name (optional when net_p is a base name)"}
+                        },
+                        "required": ["source", "net_p"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_net_lengths",
+                    description="List routed lengths for nets whose names match a glob or regular expression, sorted by length for bus matching review.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "pattern": {"type": "string", "description": "Glob or regular expression, e.g. DDR_*"},
+                            "limit": {"type": "integer", "description": "Maximum number of matching nets to report", "default": 50}
+                        },
+                        "required": ["source", "pattern"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_crop",
+                    description=(
+                        "Render a 2D PNG crop of a PCB region as ImageContent. "
+                        "Select exactly one target: reference plus margin_mm, "
+                        "net plus margin_mm, or explicit x_mm/y_mm/width_mm/height_mm. "
+                        "Layers default to the target side copper plus silkscreen "
+                        "and Edge.Cuts for reference crops, or all "
+                        "copper plus Edge.Cuts otherwise."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name, .kicad_pcb path, or sibling .kicad_sch",
+                            },
+                            "reference": {
+                                "type": "string",
+                                "description": "Component reference designator to crop around",
+                            },
+                            "net": {"description": "Net name or number to crop around"},
+                            "x_mm": {
+                                "type": "number",
+                                "description": "Explicit crop origin X in board millimetres",
+                            },
+                            "y_mm": {
+                                "type": "number",
+                                "description": "Explicit crop origin Y in board millimetres",
+                            },
+                            "width_mm": {
+                                "type": "number",
+                                "description": "Explicit crop width in millimetres",
+                            },
+                            "height_mm": {
+                                "type": "number",
+                                "description": "Explicit crop height in millimetres",
+                            },
+                            "margin_mm": {
+                                "type": "number",
+                                "description": "Margin around reference/net crop",
+                                "default": 5.0,
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Layer names, e.g. ['F.Cu','Edge.Cuts']",
+                            },
+                            "width_px": {
+                                "type": "integer",
+                                "description": "Long-edge pixel target capped at 1600",
+                                "default": 1200,
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "PNG output directory; defaults to a temp dir",
+                            },
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_highlight_net",
+                    description=(
+                        "Render a 2D PNG with one net's tracks, vias, pads, and "
+                        "zones drawn bright over a dimmed board. Defaults to the "
+                        "whole board and all copper layers."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name, .kicad_pcb path, or sibling .kicad_sch",
+                            },
+                            "net": {"description": "Net name or number to highlight"},
+                            "x_mm": {
+                                "type": "number",
+                                "description": "Optional bbox origin X in board millimetres",
+                            },
+                            "y_mm": {
+                                "type": "number",
+                                "description": "Optional bbox origin Y in board millimetres",
+                            },
+                            "width_mm": {
+                                "type": "number",
+                                "description": "Optional bbox width in millimetres",
+                            },
+                            "height_mm": {
+                                "type": "number",
+                                "description": "Optional bbox height in millimetres",
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Layer names, e.g. ['F.Cu','B.Cu','Edge.Cuts']",
+                            },
+                            "width_px": {
+                                "type": "integer",
+                                "description": "Long-edge pixel target capped at 1600",
+                                "default": 1200,
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "PNG output directory; defaults to a temp dir",
+                            },
+                        },
+                        "required": ["source", "net"]
+                    }
+                ),
+                types.Tool(
+                    name="kicad_session",
+                    description="Report live KiCad IPC reachability, version, attempted socket, and open PCB documents.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="kicad_focus",
+                    description="Select a footprint reference or board position in the running KiCad PCB editor. View zoom/pan is reported when unsupported by the IPC client.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "reference": {"type": "string", "description": "Footprint reference designator, e.g. U3"},
+                            "position": {
+                                "type": "object",
+                                "description": "Board position in millimetres",
+                                "properties": {
+                                    "x_mm": {"type": "number"},
+                                    "y_mm": {"type": "number"},
+                                },
+                                "required": ["x_mm", "y_mm"],
+                            },
+                        },
+                    },
+                ),
+                types.Tool(
+                    name="kicad_highlight_net",
+                    description="Select all selectable copper items on a net in the running KiCad PCB editor so the GUI highlights them live.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"net": {"type": "string", "description": "Net name"}},
+                        "required": ["net"],
+                    },
+                ),
+                types.Tool(
+                    name="kicad_get_selection",
+                    description="Read the user's current live KiCad PCB selection as references, nets, item types, and item summaries.",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                types.Tool(
+                    name="kicad_open_board",
+                    description="Resolve a PCB source and fail closed if the installed KiCad IPC client cannot open documents.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"source": {"type": "string", "description": "Configured board name or .kicad_pcb/.kicad_sch path"}},
+                        "required": ["source"],
+                    },
+                ),
             ]
 
     async def handle_call_tool(
@@ -440,248 +630,25 @@ class KiCadMCPServer:
         if not arguments:
             arguments = {}
 
-        # Get source parameter (board name or file path)
-        source = arguments.get("source")
-        if not source and name not in ["list_configured_boards", "list_configured_systems",
-                                        "load_board", "load_system", "trace_cross_board_signal",
-                                        "get_system_overview", "reload_config", "add_board",
-                                        "remove_board", "add_system", "remove_system", "search_datasheet"]:
-            return [types.TextContent(
-                type="text",
-                text="Error: source parameter is required"
-            )]
+        # PCB tools run kicad-cli against a .kicad_pcb; they don't touch the
+        # schematic circuit graph, so dispatch them before the standard flow.
+        if name in PCB_CLI_TOOLS:
+            return self._handle_pcb_tool(name, arguments)
 
-        # Load or get cached circuit for tools that need it
-        circuit = None
-        if source:
-            circuit = self._load_circuit(source)
-        if source and not circuit:
-            return [types.TextContent(
-                type="text",
-                text=f"Error: Could not load schematic from {source}"
-            )]
+        if name in PCB_MODEL_TOOLS:
+            return self._handle_pcb_model_tool(name, arguments)
+
+        if name in PCB_ROUTE_TOOLS:
+            return self._handle_pcb_route_tool(name, arguments)
+
+        if name in PCB_IMAGE_TOOLS:
+            return self._handle_pcb_image_tool(name, arguments)
+
+        if name in KICAD_IPC_TOOLS:
+            return self._handle_kicad_ipc_tool(name, arguments)
 
         try:
-            if name == "get_overview":
-                stats = circuit.get_info_text()
-                netlist = circuit.get_full_netlist()
-                result = f"{stats}\n\n---\n\n{netlist}"
-
-            elif name == "get_info":
-                result = circuit.get_info_text()
-
-            elif name == "get_netlist":
-                result = circuit.get_full_netlist()
-
-            elif name == "search_components":
-                field = arguments.get("field").lower()
-                query = arguments.get("query").lower()
-                matches = []
-
-                for ref, comp in circuit.netlist.components.items():
-                    # Search in standard fields
-                    if field == "value":
-                        search_value = comp.value.lower()
-                    elif field == "footprint":
-                        search_value = comp.footprint.lower()
-                    elif field == "reference":
-                        search_value = ref.lower()
-                    else:
-                        # Search in custom fields
-                        search_value = comp.fields.get(field, "").lower()
-
-                    # Partial match
-                    if query in search_value:
-                        # Format output similar to list_components
-                        if circuit._is_passive_component(ref):
-                            nets = circuit.get_nets_of_component(ref)
-                            nets_str = f" [{', '.join(nets)}]" if nets else ""
-                            matches.append(f"- **{ref}**: {comp.value}{nets_str}")
-                        else:
-                            matches.append(f"- **{ref}**: {comp.value}")
-
-                result = f"# Component Search: {field} = '{arguments.get('query')}'\n\n"
-                if matches:
-                    result += f"Found {len(matches)} matches:\n\n"
-                    result += '\n'.join(matches)
-                else:
-                    result += "No components found"
-
-            elif name == "list_nets":
-                power_only = arguments.get("power_only", False)
-                nets = []
-
-                for net_name, net in circuit.netlist.nets.items():
-                    if not power_only or circuit._is_power_net(net_name):
-                        conn_count = len(net.connections)
-                        nets.append(f"- **{net_name}**: {conn_count} connections")
-
-                result = f"# Nets {'(Power only)' if power_only else ''}\n\n"
-                result += '\n'.join(sorted(nets)) if nets else "No nets found"
-
-            elif name == "examine_component":
-                reference = arguments.get("reference")
-                comp_data = circuit.get_component(reference)
-
-                if comp_data:
-                    result = f"# Component: {reference}\n\n"
-                    result += f"**Value:** {comp_data.get('value')}\n"
-                    result += f"**Category:** {comp_data.get('category')}\n"
-                    result += f"**Footprint:** {comp_data.get('footprint', 'N/A')}\n"
-
-                    # Try to get/show datasheet URL for non-passives
-                    datasheet_url = None
-                    comp_obj = circuit.netlist.components.get(reference)
-
-                    if comp_obj and not circuit._is_passive_component(reference):
-                        # First check if datasheet field is already populated with a PDF
-                        if (
-                            comp_obj.datasheet
-                            and comp_obj.datasheet not in ['~', '']
-                            and '.pdf' in comp_obj.datasheet.lower()
-                        ):
-                            datasheet_url = comp_obj.datasheet
-                        else:
-                            # Try to look up using manufacturer and part number from fields
-                            # Different symbol libraries use different field names:
-                            # - LCSC: "Manufacturer" / "Manufacturer Part"
-                            # - Mouser: "Manufacturer_Name" / "Manufacturer_Part_Number"
-                            # - Others: "MFR" / "MPN" / "Part Number"
-                            manufacturer = (
-                                comp_obj.fields.get('Manufacturer')
-                                or comp_obj.fields.get('Manufacturer_Name')
-                                or comp_obj.fields.get('MFR')
-                                or ''
-                            )
-                            part_number = (
-                                comp_obj.fields.get('MPN')
-                                or comp_obj.fields.get('Manufacturer Part')
-                                or comp_obj.fields.get('Manufacturer_Part_Number')
-                                or comp_obj.fields.get('Part Number')
-                                or comp_obj.value
-                            )
-
-                            # Attempt lookup if we have at least a part number
-                            if part_number:
-                                # Use empty string for manufacturer if not available - search will still work
-                                if not manufacturer:
-                                    manufacturer = ''
-
-                                try:
-                                    datasheet_url = self.datasheet_finder.find_datasheet(
-                                        manufacturer,
-                                        part_number,
-                                        use_cache=True
-                                    )
-                                except Exception:
-                                    pass  # Silently fail if lookup doesn't work
-
-                    if datasheet_url:
-                        result += f"**Datasheet:** {datasheet_url}\n"
-
-                    result += "\n"
-
-                    # Show connected nets
-                    nets = circuit.get_nets_of_component(reference)
-                    result += f"## Connected Nets ({len(nets)})\n\n"
-                    for net in nets:
-                        result += f"- {net}\n"
-
-                    # Show pins
-                    pins = comp_data.get('pins', {})
-                    if pins:
-                        result += f"\n## Pins ({len(pins)})\n\n"
-                        for pin_num, pin_name in pins.items():
-                            net = circuit.get_pin_net(reference, pin_num)
-                            result += f"- Pin {pin_num} ({pin_name}): {net or 'NC'}\n"
-                else:
-                    result = f"Component {reference} not found"
-
-            elif name == "examine_net":
-                net_name = arguments.get("net_name")
-                net_details = circuit.get_net_details(net_name)
-
-                if net_details:
-                    result = f"# Net: {net_name}\n\n"
-                    result += f"**Power net:** {'Yes' if net_details['is_power'] else 'No'}\n"
-                    result += f"**Connections:** {net_details['num_connections']}\n"
-                    result += f"**Component types:** {', '.join(net_details['component_types'])}\n\n"
-
-                    result += "## Connected Components\n\n"
-                    for ref, pin, pin_name in net_details['components']:
-                        comp = circuit.netlist.components.get(ref)
-
-                        # Format based on component type
-                        if ref.startswith('#'):
-                            # Power symbol - just show reference
-                            result += f"- {ref}\n"
-                        elif comp and circuit._is_passive_component(ref):
-                            # Passive - show value and other net
-                            nets = circuit.get_nets_of_component(ref)
-                            other_nets = [n for n in nets if n != net_name]
-                            other_net_str = f" → [{', '.join(other_nets)}]" if other_nets else ""
-                            result += f"- **{ref}**: {comp.value}{other_net_str}\n"
-                        elif ref.startswith('J') or ref.startswith('CN') or ref.startswith('P'):
-                            # Connector - show ref:pin
-                            result += f"- {ref}:{pin}\n"
-                        else:
-                            # IC or other component - show ref (pin_name)
-                            result += f"- {ref} ({pin_name})\n"
-                else:
-                    result = f"Net {net_name} not found"
-
-            elif name == "trace_connection":
-                start_ref = arguments.get("start_ref")
-                end_ref = arguments.get("end_ref")
-
-                path = circuit.trace_path(start_ref, end_ref)
-                if path:
-                    result = f"# Connection Path: {start_ref} → {end_ref}\n\n"
-                    result += " → ".join(path)
-                else:
-                    result = f"No connection path found between {start_ref} and {end_ref}"
-
-            elif name == "find_connected_components":
-                reference = arguments.get("reference")
-                max_hops = arguments.get("max_hops", 2)
-
-                connected = circuit.find_connected_group(reference, max_hops)
-                connected.discard(reference)  # Remove the starting component
-
-                result = f"# Components within {max_hops} hops of {reference}\n\n"
-                result += f"Found {len(connected)} components:\n\n"
-
-                for comp_ref in sorted(list(connected)[:30]):
-                    comp = circuit.netlist.components.get(comp_ref)
-                    if comp:
-                        result += f"- {comp_ref}: {comp.value}\n"
-
-            elif name == "check_pin_connection":
-                reference = arguments.get("reference")
-                pin_number = arguments.get("pin_number")
-
-                net = circuit.get_pin_net(reference, pin_number)
-                comp = circuit.netlist.components.get(reference)
-
-                result = f"# Pin Connection: {reference}:{pin_number}\n\n"
-                if comp:
-                    pin_name = comp.pins.get(pin_number, "Unknown")
-                    result += f"**Pin name:** {pin_name}\n"
-
-                if net:
-                    result += f"**Connected to net:** {net}\n\n"
-
-                    # Show what else is on this net
-                    net_details = circuit.get_net_details(net)
-                    if net_details:
-                        result += f"**Other components on this net:**\n"
-                        for ref, pin, name in net_details['components'][:10]:
-                            if ref != reference:
-                                result += f"- {ref}:{pin} ({name})\n"
-                else:
-                    result += "**Not connected**"
-
-            elif name == "search_datasheet":
+            if name == "search_datasheet":
                 manufacturer = arguments.get("manufacturer", "")
                 part_number = arguments.get("part_number", "")
                 force_refresh = arguments.get("force_refresh", False)
@@ -841,13 +808,16 @@ class KiCadMCPServer:
                 board_desc = arguments.get("description", "")
 
                 # Add the board
-                self.config.add_board(board_name, board_path, board_desc)
+                board_pcb = arguments.get("pcb")
+                self.config.add_board(board_name, board_path, board_desc, board_pcb)
 
                 result = f"# Board Added\n\n"
                 result += f"**Name:** {board_name}\n"
                 result += f"**Path:** {board_path}\n"
-                result += f"**Description:** {board_desc}\n\n"
-                result += f"Saved to: {self.config.config_path}\n"
+                result += f"**Description:** {board_desc}\n"
+                if board_pcb:
+                    result += f"**PCB:** {board_pcb}\n"
+                result += f"\nSaved to: {self.config.config_path}\n"
 
             elif name == "remove_board":
                 board_name = arguments.get("name")
@@ -892,11 +862,6 @@ class KiCadMCPServer:
             else:
                 result = f"Unknown tool: {name}"
 
-            # Prepend any pending diff from auto-reload
-            diff = self._get_pending_diff()
-            if diff:
-                result = diff + "\n\n---\n\n" + result
-
             return [types.TextContent(type="text", text=result)]
 
         except Exception as e:
@@ -904,87 +869,487 @@ class KiCadMCPServer:
                 type="text",
                 text=f"Error executing {name}: {str(e)}"
             )]
-    def _load_circuit(self, source: str) -> Optional[CircuitGraph]:
-        """Load a circuit from cache or file.
 
-        Auto-reloads if file has been modified. Stores diff for retrieval via _get_pending_diff().
-
-        Args:
-            source: Either a board name from config or a full path to a schematic
-        """
-        # First check if it's a board name from config
-        if not ('/' in source or '\\' in source):
-            # Looks like a board name, try to load from config
-            circuit = self.config.load_board(source)
-            if circuit:
-                self.circuits[source] = circuit
-                return circuit
-
-        # Otherwise treat as a file path
-        path = Path(source)
-
-        # Check cache with mtime validation
-        if source in self.circuits:
-            cached = self.circuits[source]
-            if cached._filepath and cached._filepath.exists():
-                current_mtime = cached._filepath.stat().st_mtime
-
-                # Check if file has been modified since we loaded it
-                if cached._load_mtime and cached._load_mtime >= current_mtime:
-                    return cached  # Cache is fresh
-
-                # File has changed - reload and compute diff
-                print(f"Schematic '{source}' has changed, auto-reloading...", file=sys.stderr)
-                try:
-                    if path.suffix == '.net':
-                        new_circuit = CircuitGraph.from_netlist(path)
-                    else:
-                        new_circuit = CircuitGraph.from_kicad_schematic(path)
-
-                    # Compute and store diff
-                    if new_circuit:
-                        diff = self.config._compute_diff(cached, new_circuit)
-                        self._file_path_diff = self.config._format_diff(diff)
-                        self.circuits[source] = new_circuit
-                        return new_circuit
-
-                except Exception as e:
-                    print(f"Error reloading circuit: {e}", file=sys.stderr)
-                    return cached  # Return stale cache on error
-
-        # Load new circuit
+    def _handle_kicad_ipc_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch live KiCad IPC tools."""
         try:
-            if path.suffix == '.net':
-                circuit = CircuitGraph.from_netlist(path)
+            if name == "kicad_session":
+                result = format_session(self.kicad_ipc.session())
+            elif name == "kicad_focus":
+                result = format_selection(
+                    self.kicad_ipc.focus(
+                        reference=arguments.get("reference"),
+                        position=arguments.get("position"),
+                    )["selection"],
+                    title="Live KiCad Focus",
+                )
+            elif name == "kicad_highlight_net":
+                net = arguments.get("net")
+                if not net:
+                    return [types.TextContent(type="text", text="Error: net parameter is required")]
+                data = self.kicad_ipc.highlight_net(str(net))
+                result = format_selection(
+                    data["selection"],
+                    title=f"Live KiCad Net Highlight: {data['net']}",
+                )
+            elif name == "kicad_get_selection":
+                result = format_selection(self.kicad_ipc.get_selection())
+            elif name == "kicad_open_board":
+                result = str(self.kicad_ipc.open_board(arguments.get("source", "")))
             else:
-                circuit = CircuitGraph.from_kicad_schematic(path)
-
-            # Cache it
-            self.circuits[source] = circuit
-            return circuit
-
+                result = f"Unknown live KiCad IPC tool: {name}"
+            return [types.TextContent(type="text", text=result)]
+        except (KiCadIPCError, ValueError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
         except Exception as e:
-            print(f"Error loading circuit: {e}", file=sys.stderr)
-            return None
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
 
-    def _get_pending_diff(self) -> Optional[str]:
-        """Get any pending diff from config or file path loads, then clear it.
+    def _handle_pcb_model_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch the parsed-model PCB tools (overview/component/near).
 
-        Returns:
-            Formatted diff string or None
+        These query the in-memory :class:`PCBModel` (no kicad-cli). Source
+        resolution failures surface as an explicit ``Error:`` TextContent.
         """
-        # Check config first (for named boards)
-        config_diff = self.config.get_last_diff()
-        if config_diff:
-            return config_diff
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+        try:
+            model = self._load_pcb(source)
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
 
-        # Check file path diff
-        if self._file_path_diff:
-            diff = self._file_path_diff
-            self._file_path_diff = None
-            return diff
+        if name == "pcb_overview":
+            result = self._format_pcb_overview(model)
+        elif name == "pcb_component":
+            result = self._format_pcb_component(model, arguments.get("reference"))
+        else:  # pcb_components_near
+            result = self._format_pcb_components_near(
+                model, arguments.get("reference"), arguments.get("radius_mm", 5.0)
+            )
+        return [types.TextContent(type="text", text=result)]
 
-        return None
+    def _handle_pcb_route_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch route-analysis PCB tools."""
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+        try:
+            model = self._load_pcb(source)
+            if name == "pcb_net_route":
+                net = arguments.get("net")
+                if net is None:
+                    return [types.TextContent(type="text", text="Error: net parameter is required")]
+                result = self._format_pcb_net_route(analyze_net_route(model, net))
+            elif name == "pcb_diff_pair":
+                net_p_arg = arguments.get("net_p")
+                if not net_p_arg:
+                    return [types.TextContent(type="text", text="Error: net_p parameter is required")]
+                net_p, net_n = resolve_diff_pair(model, net_p_arg, arguments.get("net_n"))
+                result = self._format_pcb_diff_pair(
+                    analyze_net_route(model, net_p), analyze_net_route(model, net_n)
+                )
+            else:  # pcb_net_lengths
+                pattern = arguments.get("pattern")
+                if not pattern:
+                    return [types.TextContent(type="text", text="Error: pattern parameter is required")]
+                limit = int(arguments.get("limit", 50))
+                result = self._format_pcb_net_lengths(
+                    pattern, sorted_length_rows(model, pattern, limit), limit
+                )
+            return [types.TextContent(type="text", text=result)]
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
+    def _handle_pcb_image_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch PCB image tools (crop/highlight) backed by direct rendering."""
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+
+        try:
+            model = self._load_pcb(source)
+            if name == "pcb_crop":
+                result = pcb_rendering.render_crop(
+                    model,
+                    reference=arguments.get("reference"),
+                    net=arguments.get("net"),
+                    x_mm=arguments.get("x_mm"),
+                    y_mm=arguments.get("y_mm"),
+                    width_mm=arguments.get("width_mm"),
+                    height_mm=arguments.get("height_mm"),
+                    margin_mm=arguments.get("margin_mm", 5.0),
+                    layers=arguments.get("layers"),
+                    width_px=arguments.get("width_px", 1200),
+                    output_dir=arguments.get("output_dir"),
+                )
+                title = "PCB Crop"
+            elif name == "pcb_highlight_net":
+                if "net" not in arguments:
+                    return [
+                        types.TextContent(
+                            type="text", text="Error: net parameter is required"
+                        )
+                    ]
+                result = pcb_rendering.render_highlight_net(
+                    model,
+                    net=arguments.get("net"),
+                    x_mm=arguments.get("x_mm"),
+                    y_mm=arguments.get("y_mm"),
+                    width_mm=arguments.get("width_mm"),
+                    height_mm=arguments.get("height_mm"),
+                    layers=arguments.get("layers"),
+                    width_px=arguments.get("width_px", 1200),
+                    output_dir=arguments.get("output_dir"),
+                )
+                title = f"PCB Net Highlight: {arguments.get('net')}"
+            else:
+                return [
+                    types.TextContent(
+                        type="text", text=f"Unknown PCB image tool: {name}"
+                    )
+                ]
+
+            return [
+                types.ImageContent(
+                    type="image",
+                    data=result.image_base64,
+                    mimeType="image/png",
+                ),
+                types.TextContent(
+                    type="text", text=pcb_rendering.result_caption(title, result)
+                ),
+            ]
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
+    def _load_pcb(self, source: str) -> PCBModel:
+        """Resolve a source to a board file and return its cached parsed model.
+
+        Resolution routes through :meth:`KiCadMCPConfig.resolve_pcb_source`;
+        parsing is cached in-memory keyed by (path, mtime) by
+        :func:`load_pcb_model`.
+        """
+        path = self.config.resolve_pcb_source(source)
+        return load_pcb_model(path)
+
+    @staticmethod
+    def _format_pcb_overview(model: PCBModel) -> str:
+        name = Path(str(model.path)).name if model.path else "board"
+        lines = [f"# PCB Overview: {name}", ""]
+
+        dims = model.board_dimensions()
+        bbox = model.bounding_box()
+        if dims and bbox:
+            lines.append(
+                f"**Dimensions:** {dims[0]:.2f} x {dims[1]:.2f} mm "
+                f"(bbox {bbox.min_x:.2f},{bbox.min_y:.2f} to "
+                f"{bbox.max_x:.2f},{bbox.max_y:.2f})"
+            )
+        else:
+            lines.append("**Dimensions:** unknown (no Edge.Cuts outline found)")
+
+        if model.board_thickness is not None:
+            lines.append(f"**Board thickness:** {model.board_thickness} mm")
+        lines.append(
+            f"**Copper layers:** {len(model.copper_layers)} "
+            f"({', '.join(model.copper_layers)})"
+        )
+        lines.append(f"**Total layers defined:** {len(model.layers)}")
+
+        if model.stackup:
+            lines.append("\n## Stackup")
+            for s in model.stackup:
+                thickness = f", {s.thickness} mm" if s.thickness is not None else ""
+                material = f", {s.material}" if s.material else ""
+                lines.append(f"- {s.name} ({s.type}){thickness}{material}")
+
+        lines.append("\n## Counts")
+        lines.append(f"- Footprints: {len(model.footprints)}")
+        lines.append(f"- Tracks (segments): {len(model.tracks)}")
+        lines.append(f"- Arcs: {len(model.arcs)}")
+        lines.append(f"- Vias: {len(model.vias)}")
+        lines.append(f"- Zones: {len(model.zones)}")
+        lines.append(f"- Nets: {len(model.nets)}")
+
+        top = model.top_nets(10)
+        if top:
+            lines.append("\n## Top nets by copper element count")
+            for num, net_name, count in top:
+                label = net_name if net_name else f"(net {num})"
+                lines.append(f"- {label}: {count}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_component(model: PCBModel, reference: Optional[str]) -> str:
+        if not reference:
+            return "Error: reference is required"
+        fp = model.footprint(reference)
+        if fp is None:
+            return f"Component {reference} not found on the PCB"
+
+        lines = [f"# Component: {fp.reference}", ""]
+        lines.append(f"**Value:** {fp.value}")
+        lines.append(f"**Footprint:** {fp.lib_id}")
+        lines.append(f"**Side:** {fp.side}")
+        lines.append(
+            f"**Position:** ({fp.position.x:.3f}, {fp.position.y:.3f}) mm"
+        )
+        lines.append(f"**Rotation:** {fp.rotation:.1f}°")
+
+        lines.append(f"\n## Pads ({len(fp.pads)})")
+        for pad in fp.pads:
+            net = pad.net_name if pad.net_name else "(unconnected)"
+            lines.append(
+                f"- Pad {pad.number} [{pad.pad_type}] → {net} "
+                f"@ ({pad.position.x:.3f}, {pad.position.y:.3f})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_components_near(
+        model: PCBModel, reference: Optional[str], radius_mm: float
+    ) -> str:
+        if not reference:
+            return "Error: reference is required"
+        if model.footprint(reference) is None:
+            return f"Component {reference} not found on the PCB"
+
+        neighbors = model.footprints_near(reference, radius_mm)
+        lines = [
+            f"# Components within {radius_mm} mm of {reference}",
+            "",
+            f"Found {len(neighbors)} component(s):",
+            "",
+        ]
+        for fp, dist in neighbors:
+            lines.append(
+                f"- {fp.reference} ({fp.value}) — {dist:.2f} mm [{fp.side}]"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_net_route(route: RouteAnalysis) -> str:
+        label = route.net_name or f"net {route.net_number}"
+        lines = [f"# Route: {label}", ""]
+        lines.append(f"**Total routed length:** {route.total_length_mm:.6f} mm")
+        lines.append(
+            f"**Elements:** {route.track_count} segment(s), {route.arc_count} arc(s), {route.via_count} via(s)"
+        )
+        lines.append(f"**Layers used:** {', '.join(route.layers_used) if route.layers_used else 'none'}")
+        lines.append(f"**Endpoint pads:** {', '.join(route.endpoints) if route.endpoints else 'none'}")
+
+        status = "connected" if route.copper_island_count <= 1 else "disconnected"
+        if route.connected_only_through_zone:
+            status = "connected only through zone; routed length through pour is undefined"
+        lines.append(
+            f"**Connectivity:** {status} ({route.copper_island_count} measured copper island(s), tolerance {route.tolerance_mm} mm)"
+        )
+        if route.zones:
+            zone_layers = sorted({layer for zone in route.zones for layer in zone.layers})
+            lines.append(
+                f"**Zones:** {len(route.zones)} zone(s) on {', '.join(zone_layers) if zone_layers else 'unknown layers'}; excluded from length math"
+            )
+
+        lines.append("\n## Layer lengths")
+        if route.layer_lengths_mm:
+            for layer, length in route.layer_lengths_mm.items():
+                lines.append(f"- {layer}: {length:.6f} mm")
+        else:
+            lines.append("- none")
+
+        lines.append("\n## Width profile")
+        if route.min_width_mm is None:
+            lines.append("- no routed segments/arcs")
+        else:
+            lines.append(f"- Min/max: {route.min_width_mm:.6f} / {route.max_width_mm:.6f} mm")
+            for width, length in route.width_lengths_mm.items():
+                lines.append(f"- {width:.6f} mm: {length:.6f} mm")
+
+        if route.via_spans:
+            lines.append("\n## Via spans")
+            for span, count in route.via_spans.items():
+                lines.append(f"- {span}: {count}")
+
+        if route.copper_island_count > 1:
+            lines.append("\n## Copper islands")
+            for idx, island in enumerate(route.islands, 1):
+                lines.append(f"- Island {idx}: {island.summary()}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_diff_pair(pos: RouteAnalysis, neg: RouteAnalysis) -> str:
+        mismatch = abs(pos.total_length_mm - neg.total_length_mm)
+        lines = [f"# Differential Pair: {pos.net_name} / {neg.net_name}", ""]
+        lines.append(f"- {pos.net_name}: {pos.total_length_mm:.6f} mm, {pos.via_count} via(s)")
+        lines.append(f"- {neg.net_name}: {neg.total_length_mm:.6f} mm, {neg.via_count} via(s)")
+        lines.append(f"**Length mismatch:** {mismatch:.6f} mm")
+        via_note = "symmetric" if pos.via_count == neg.via_count else "different"
+        lines.append(f"**Via-count symmetry:** {via_note}")
+        p_layers = set(pos.layers_used)
+        n_layers = set(neg.layers_used)
+        if p_layers == n_layers:
+            lines.append(f"**Layer usage:** matched ({', '.join(sorted(p_layers))})")
+        else:
+            lines.append(
+                "**Layer usage differs:** "
+                f"only {pos.net_name}: {', '.join(sorted(p_layers - n_layers)) or 'none'}; "
+                f"only {neg.net_name}: {', '.join(sorted(n_layers - p_layers)) or 'none'}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_net_lengths(
+        pattern: str, rows: list[RouteAnalysis], limit: int
+    ) -> str:
+        lines = [f"# Net Lengths: {pattern}", "", f"Matched {len(rows)} net(s), capped at {limit}.", ""]
+        if not rows:
+            lines.append("No nets matched.")
+            return "\n".join(lines)
+        lines.append("| Net | Length (mm) | Vias | Islands | Layers |")
+        lines.append("| --- | ---: | ---: | ---: | --- |")
+        for route in rows:
+            lines.append(
+                f"| {route.net_name} | {route.total_length_mm:.6f} | {route.via_count} | {route.copper_island_count} | {', '.join(route.layers_used)} |"
+            )
+        return "\n".join(lines)
+
+    def _handle_pcb_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch the kicad-cli-backed PCB tools (drc/render/export).
+
+        All failures surface as an explicit ``Error:`` TextContent so the DRC
+        tool never reports a false clean pass.
+        """
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+
+        try:
+            if name == "pcb_drc":
+                report = kicad_cli.run_drc(
+                    source,
+                    severity=arguments.get("severity", "all"),
+                    max_violations=arguments.get("max_violations"),
+                    config=self.config,
+                )
+                return [types.TextContent(type="text", text=self._format_drc(report))]
+
+            if name == "pcb_render":
+                result = kicad_cli.render_pcb_base64(
+                    source,
+                    side=arguments.get("side", "top"),
+                    width=arguments.get("width", 1600),
+                    height=arguments.get("height", 900),
+                    quality=arguments.get("quality", "basic"),
+                    background=arguments.get("background"),
+                    zoom=arguments.get("zoom"),
+                    rotate=arguments.get("rotate"),
+                    pan=arguments.get("pan"),
+                    pivot=arguments.get("pivot"),
+                    perspective=arguments.get("perspective", False),
+                    floor=arguments.get("floor", False),
+                    config=self.config,
+                )
+                caption = (
+                    f"# PCB Render ({result['side']})\n\n"
+                    f"**Saved to:** {result['path']}\n"
+                    f"**Size:** {result['width']}x{result['height']} px, "
+                    f"{result['size_bytes']} bytes\n"
+                    f"**Duration:** {result['duration_s']}s\n"
+                )
+                return [
+                    types.ImageContent(
+                        type="image",
+                        data=result["image_base64"],
+                        mimeType="image/png",
+                    ),
+                    types.TextContent(type="text", text=caption),
+                ]
+
+            if name == "pcb_export_layers":
+                layers = arguments.get("layers")
+                if not layers:
+                    return [types.TextContent(type="text", text="Error: layers parameter is required")]
+                paths = kicad_cli.export_layers_svg(
+                    source,
+                    layers,
+                    output_dir=arguments.get("output_dir"),
+                    fit=arguments.get("fit", "board"),
+                    black_and_white=arguments.get("black_and_white", False),
+                    config=self.config,
+                )
+                lines = "\n".join(f"- {p}" for p in paths)
+                text = (
+                    f"# Exported {len(paths)} layer SVG(s)\n\n"
+                    f"**Fit:** {arguments.get('fit', 'board')}\n\n{lines}\n"
+                )
+                return [types.TextContent(type="text", text=text)]
+
+            return [types.TextContent(type="text", text=f"Unknown PCB tool: {name}")]
+
+        except (KiCadCLIError, ValueError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
+    @staticmethod
+    def _format_drc(report: dict) -> str:
+        """Render a parsed DRC report dict as a Markdown summary."""
+        lines: list[str] = ["# DRC Report"]
+        src = report.get("source") or ""
+        meta = []
+        if src:
+            meta.append(f"**Board:** {src}")
+        if report.get("kicad_version"):
+            meta.append(f"**KiCad:** {report['kicad_version']}")
+        if report.get("duration_s") is not None:
+            meta.append(f"**Duration:** {report['duration_s']}s")
+        if meta:
+            lines.append("\n".join(meta))
+
+        total = report.get("total", 0)
+        by_sev = report.get("by_severity", {})
+        sev_str = ", ".join(f"{v} {k}" for k, v in sorted(by_sev.items())) or "none"
+        lines.append(f"**Total problems:** {total} ({sev_str})")
+        if report.get("severity_filter") and report["severity_filter"] != "all":
+            lines.append(f"*(filtered to severity: {report['severity_filter']})*")
+        if report.get("report_path"):
+            lines.append(f"**Report:** {report['report_path']}")
+
+        if total == 0:
+            lines.append("\n✅ No DRC violations found.")
+            return "\n\n".join(lines)
+
+        if report.get("truncated"):
+            lines.append("*(violation listing truncated by max_violations; totals above are exact)*")
+
+        for group in report.get("groups", []):
+            sevs = ", ".join(f"{v} {k}" for k, v in sorted(group["severities"].items()))
+            header = f"## {group['type']} — {group['count']} ({sevs})"
+            block = [header]
+            for prob in group["problems"]:
+                block.append(f"- **[{prob['severity']}]** {prob['description']}")
+                for item in prob["items"]:
+                    x, y = item.get("x"), item.get("y")
+                    loc = f" @ ({x}, {y})" if x is not None and y is not None else ""
+                    block.append(f"    - {item['description']}{loc}")
+            lines.append("\n".join(block))
+
+        return "\n\n".join(lines)
 
     async def run(self):
         """Run the MCP server."""
