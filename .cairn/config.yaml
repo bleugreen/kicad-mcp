@@ -12,4 +12,3 @@ mcpServers:
     - /Users/mitch/projects/kicad-mcp
     - run
     - kicad-mcp
-    enabled: false
