@@ -49,7 +49,7 @@ async def test_pcb_overview_tool_on_fixture(server):
     assert not text.startswith("Error"), text
     assert "# PCB Overview" in text
     assert "50.00 x 30.00 mm" in text
-    assert "Footprints: 3" in text
+    assert "Footprints: 4" in text
     assert "GND" in text
 
 
