@@ -1,0 +1,188 @@
+{
+  "$schema": "https://schemas.kicad.org/drc.v1.json",
+  "coordinate_units": "mm",
+  "date": "2026-07-01T13:49:20-0700",
+  "kicad_version": "9.0.7",
+  "source": "main.kicad_pcb",
+  "schematic_parity": [],
+  "unconnected_items": [
+    {
+      "description": "Missing connection between items",
+      "items": [
+        {
+          "description": "Pad 40 [+3.3V] of J3 on B.Cu",
+          "pos": {
+            "x": 128.36,
+            "y": 120.7875
+          },
+          "uuid": "e1c5e0e7-d6fc-4ee8-a15d-1c9dccbdbba2"
+        },
+        {
+          "description": "Pad 38 [+3.3V] of J3 on B.Cu",
+          "pos": {
+            "x": 128.76,
+            "y": 120.7875
+          },
+          "uuid": "66a16c70-c7b2-471d-8ac0-79f7c95b9b91"
+        }
+      ],
+      "severity": "error",
+      "type": "unconnected_items"
+    },
+    {
+      "description": "Missing connection between items",
+      "items": [
+        {
+          "description": "Pad 37 [+3.3V] of J3 on B.Cu",
+          "pos": {
+            "x": 128.76,
+            "y": 118.0775
+          },
+          "uuid": "a79a39a1-1115-4d23-b6c4-8efe552fa91e"
+        },
+        {
+          "description": "Pad 39 [+3.3V] of J3 on B.Cu",
+          "pos": {
+            "x": 128.36,
+            "y": 118.0775
+          },
+          "uuid": "6b9612b8-8f11-4dc6-887f-29422cb35c2e"
+        }
+      ],
+      "severity": "error",
+      "type": "unconnected_items"
+    }
+  ],
+  "violations": [
+    {
+      "description": "Items shorting two nets (nets /MOSI and +3.3V)",
+      "items": [
+        {
+          "description": "Track [/MOSI] on B.Cu, length 19.0919 mm",
+          "pos": {
+            "x": 144.82,
+            "y": 89.600654
+          },
+          "uuid": "20c5885e-fae5-456a-b9bc-6c7ea267fc6f"
+        },
+        {
+          "description": "Track [+3.3V] on B.Cu, length 0.8500 mm",
+          "pos": {
+            "x": 142.65,
+            "y": 88.55
+          },
+          "uuid": "4ab8b350-19fd-4814-bc11-a3b427fc614c"
+        }
+      ],
+      "severity": "error",
+      "type": "shorting_items"
+    },
+    {
+      "description": "Tracks crossing",
+      "items": [
+        {
+          "description": "Track [/MOSI] on B.Cu, length 19.0919 mm",
+          "pos": {
+            "x": 144.82,
+            "y": 89.600654
+          },
+          "uuid": "20c5885e-fae5-456a-b9bc-6c7ea267fc6f"
+        },
+        {
+          "description": "Track [/SD_D0] on B.Cu, length 4.6175 mm",
+          "pos": {
+            "x": 143.359,
+            "y": 91.2475
+          },
+          "uuid": "65daedb0-b091-4f00-8c06-b0c51efb3eaa"
+        }
+      ],
+      "severity": "error",
+      "type": "tracks_crossing"
+    },
+    {
+      "description": "Clearance violation (netclass 'Default' clearance 0.2000 mm; actual 0.1939 mm)",
+      "items": [
+        {
+          "description": "Track [/MOSI] on B.Cu, length 19.0919 mm",
+          "pos": {
+            "x": 144.82,
+            "y": 89.600654
+          },
+          "uuid": "20c5885e-fae5-456a-b9bc-6c7ea267fc6f"
+        },
+        {
+          "description": "Via [GND] on F.Cu - B.Cu",
+          "pos": {
+            "x": 142.61,
+            "y": 86.48
+          },
+          "uuid": "27541a47-1a5f-43f9-9e9c-9bc1b9194312"
+        }
+      ],
+      "severity": "error",
+      "type": "clearance"
+    },
+    {
+      "description": "Thermal relief connection to zone incomplete (layer F.Cu; zone min spoke count 2; actual 1)",
+      "items": [
+        {
+          "description": "Zone [GND] on F.Cu, B.Cu and 2 more, priority 0",
+          "pos": {
+            "x": 111.25,
+            "y": 67.54
+          },
+          "uuid": "36c0be2a-59a6-4862-b3aa-04b4cc971429"
+        },
+        {
+          "description": "Pad 2 [GND] of C18 on F.Cu",
+          "pos": {
+            "x": 118.28,
+            "y": 73.13
+          },
+          "uuid": "b7ca2986-416a-4d67-8470-f8aad88874fd"
+        }
+      ],
+      "severity": "error",
+      "type": "starved_thermal"
+    },
+    {
+      "description": "Silkscreen clipped by board edge",
+      "items": [
+        {
+          "description": "Segment on Edge.Cuts",
+          "pos": {
+            "x": 111.27,
+            "y": 111.58
+          },
+          "uuid": "3767a989-0ea3-433c-a910-58c8c9216684"
+        },
+        {
+          "description": "Segment of USB1 on F.Silkscreen",
+          "pos": {
+            "x": 110.7185,
+            "y": 80.36
+          },
+          "uuid": "0b128107-45a3-4b9b-887c-59f6bd48ac4b"
+        }
+      ],
+      "severity": "warning",
+      "type": "silk_edge_clearance"
+    },
+    {
+      "description": "Footprint 'C_0603_1608Metric' does not match copy in library 'Capacitor_SMD'.",
+      "items": [
+        {
+          "description": "Footprint C23",
+          "pos": {
+            "x": 123.6275,
+            "y": 104.537
+          },
+          "uuid": "0ee03a31-278b-4fbd-9f90-8ca2002cf46b"
+        }
+      ],
+      "severity": "warning",
+      "type": "lib_footprint_mismatch"
+    }
+  ]
+}

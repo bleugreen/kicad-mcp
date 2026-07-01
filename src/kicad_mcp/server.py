@@ -11,6 +11,12 @@ from .circuit_graph import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
+from . import kicad_cli
+from .kicad_cli import KiCadCLIError
+
+# PCB tools operate on .kicad_pcb files via kicad-cli, resolving their source
+# through the config, so they bypass the schematic/circuit machinery entirely.
+PCB_CLI_TOOLS = {"pcb_drc", "pcb_render", "pcb_export_layers"}
 
 
 class KiCadMCPServer:
@@ -227,6 +233,113 @@ class KiCadMCPServer:
                         "required": ["name"]
                     }
                 ),
+                types.Tool(
+                    name="pcb_drc",
+                    description=(
+                        "Run headless Design Rule Check on a PCB and return "
+                        "violations grouped by rule with severities, mm "
+                        "coordinates, totals, and the JSON report path. "
+                        "Fails closed (explicit error) if the run fails rather "
+                        "than reporting a false clean pass."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "severity": {
+                                "type": "string",
+                                "description": "Filter: all, error, warning, or exclusion",
+                                "enum": ["all", "error", "warning", "exclusion"],
+                                "default": "all"
+                            },
+                            "max_violations": {
+                                "type": "integer",
+                                "description": "Cap the number of individual violations listed (totals stay exact)"
+                            }
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_render",
+                    description=(
+                        "Render a PCB in 3D to a PNG and return the image plus "
+                        "the saved file path. Supports camera controls: side, "
+                        "zoom, rotate, pan, pivot, perspective, floor."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "side": {
+                                "type": "string",
+                                "description": "Camera side",
+                                "enum": ["top", "bottom", "left", "right", "front", "back"],
+                                "default": "top"
+                            },
+                            "width": {"type": "integer", "description": "Image width in px", "default": 1600},
+                            "height": {"type": "integer", "description": "Image height in px", "default": 900},
+                            "quality": {
+                                "type": "string",
+                                "description": "Render quality",
+                                "enum": ["basic", "high", "user", "job_settings"],
+                                "default": "basic"
+                            },
+                            "background": {
+                                "type": "string",
+                                "description": "Background: default, transparent, or opaque",
+                                "enum": ["default", "transparent", "opaque"]
+                            },
+                            "zoom": {"type": "number", "description": "Camera zoom (default 1)"},
+                            "rotate": {"type": "string", "description": "Rotate board 'X,Y,Z' e.g. '-45,0,45' for isometric"},
+                            "pan": {"type": "string", "description": "Pan camera 'X,Y,Z'"},
+                            "pivot": {"type": "string", "description": "Pivot point relative to board center in cm 'X,Y,Z'"},
+                            "perspective": {"type": "boolean", "description": "Use perspective projection", "default": False},
+                            "floor": {"type": "boolean", "description": "Enable floor, shadows, post-processing", "default": False}
+                        },
+                        "required": ["source"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_export_layers",
+                    description=(
+                        "Export one SVG per PCB layer (e.g. F.Cu,B.Cu,Edge.Cuts) "
+                        "and return the generated file paths. Defaults to "
+                        "board-area fit for downstream cropping."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "description": "Board name from config OR path to .kicad_pcb (or sibling .kicad_sch)"
+                            },
+                            "layers": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Untranslated layer names, e.g. ['F.Cu','B.Cu','Edge.Cuts']"
+                            },
+                            "output_dir": {
+                                "type": "string",
+                                "description": "Directory to write SVGs into (default: a per-run temp dir)"
+                            },
+                            "fit": {
+                                "type": "string",
+                                "description": "Page sizing: board (board area only), page (framed page), or current",
+                                "enum": ["board", "page", "current"],
+                                "default": "board"
+                            },
+                            "black_and_white": {"type": "boolean", "description": "Plot black and white only", "default": False}
+                        },
+                        "required": ["source", "layers"]
+                    }
+                ),
             ]
 
     async def handle_call_tool(
@@ -237,6 +350,11 @@ class KiCadMCPServer:
         # Some tools don't require arguments
         if not arguments:
             arguments = {}
+
+        # PCB tools run kicad-cli against a .kicad_pcb; they don't touch the
+        # schematic circuit graph, so dispatch them before the standard flow.
+        if name in PCB_CLI_TOOLS:
+            return self._handle_pcb_tool(name, arguments)
 
         try:
             if name == "search_datasheet":
@@ -460,6 +578,131 @@ class KiCadMCPServer:
                 type="text",
                 text=f"Error executing {name}: {str(e)}"
             )]
+
+    def _handle_pcb_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch the kicad-cli-backed PCB tools (drc/render/export).
+
+        All failures surface as an explicit ``Error:`` TextContent so the DRC
+        tool never reports a false clean pass.
+        """
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+
+        try:
+            if name == "pcb_drc":
+                report = kicad_cli.run_drc(
+                    source,
+                    severity=arguments.get("severity", "all"),
+                    max_violations=arguments.get("max_violations"),
+                    config=self.config,
+                )
+                return [types.TextContent(type="text", text=self._format_drc(report))]
+
+            if name == "pcb_render":
+                result = kicad_cli.render_pcb_base64(
+                    source,
+                    side=arguments.get("side", "top"),
+                    width=arguments.get("width", 1600),
+                    height=arguments.get("height", 900),
+                    quality=arguments.get("quality", "basic"),
+                    background=arguments.get("background"),
+                    zoom=arguments.get("zoom"),
+                    rotate=arguments.get("rotate"),
+                    pan=arguments.get("pan"),
+                    pivot=arguments.get("pivot"),
+                    perspective=arguments.get("perspective", False),
+                    floor=arguments.get("floor", False),
+                    config=self.config,
+                )
+                caption = (
+                    f"# PCB Render ({result['side']})\n\n"
+                    f"**Saved to:** {result['path']}\n"
+                    f"**Size:** {result['width']}x{result['height']} px, "
+                    f"{result['size_bytes']} bytes\n"
+                    f"**Duration:** {result['duration_s']}s\n"
+                )
+                return [
+                    types.ImageContent(
+                        type="image",
+                        data=result["image_base64"],
+                        mimeType="image/png",
+                    ),
+                    types.TextContent(type="text", text=caption),
+                ]
+
+            if name == "pcb_export_layers":
+                layers = arguments.get("layers")
+                if not layers:
+                    return [types.TextContent(type="text", text="Error: layers parameter is required")]
+                paths = kicad_cli.export_layers_svg(
+                    source,
+                    layers,
+                    output_dir=arguments.get("output_dir"),
+                    fit=arguments.get("fit", "board"),
+                    black_and_white=arguments.get("black_and_white", False),
+                    config=self.config,
+                )
+                lines = "\n".join(f"- {p}" for p in paths)
+                text = (
+                    f"# Exported {len(paths)} layer SVG(s)\n\n"
+                    f"**Fit:** {arguments.get('fit', 'board')}\n\n{lines}\n"
+                )
+                return [types.TextContent(type="text", text=text)]
+
+            return [types.TextContent(type="text", text=f"Unknown PCB tool: {name}")]
+
+        except (KiCadCLIError, ValueError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
+    @staticmethod
+    def _format_drc(report: dict) -> str:
+        """Render a parsed DRC report dict as a Markdown summary."""
+        lines: list[str] = ["# DRC Report"]
+        src = report.get("source") or ""
+        meta = []
+        if src:
+            meta.append(f"**Board:** {src}")
+        if report.get("kicad_version"):
+            meta.append(f"**KiCad:** {report['kicad_version']}")
+        if report.get("duration_s") is not None:
+            meta.append(f"**Duration:** {report['duration_s']}s")
+        if meta:
+            lines.append("\n".join(meta))
+
+        total = report.get("total", 0)
+        by_sev = report.get("by_severity", {})
+        sev_str = ", ".join(f"{v} {k}" for k, v in sorted(by_sev.items())) or "none"
+        lines.append(f"**Total problems:** {total} ({sev_str})")
+        if report.get("severity_filter") and report["severity_filter"] != "all":
+            lines.append(f"*(filtered to severity: {report['severity_filter']})*")
+        if report.get("report_path"):
+            lines.append(f"**Report:** {report['report_path']}")
+
+        if total == 0:
+            lines.append("\n✅ No DRC violations found.")
+            return "\n\n".join(lines)
+
+        if report.get("truncated"):
+            lines.append("*(violation listing truncated by max_violations; totals above are exact)*")
+
+        for group in report.get("groups", []):
+            sevs = ", ".join(f"{v} {k}" for k, v in sorted(group["severities"].items()))
+            header = f"## {group['type']} — {group['count']} ({sevs})"
+            block = [header]
+            for prob in group["problems"]:
+                block.append(f"- **[{prob['severity']}]** {prob['description']}")
+                for item in prob["items"]:
+                    x, y = item.get("x"), item.get("y")
+                    loc = f" @ ({x}, {y})" if x is not None and y is not None else ""
+                    block.append(f"    - {item['description']}{loc}")
+            lines.append("\n".join(block))
+
+        return "\n\n".join(lines)
 
     async def run(self):
         """Run the MCP server."""

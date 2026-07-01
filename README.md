@@ -16,6 +16,7 @@ layout surface that PCB-analysis tooling builds on.
 - **Datasheet Lookup**: Resolve a manufacturer and part number to a datasheet URL
 - **Board & System Configuration**: Register boards and systems; add or remove them without restarting
 - **PCB Sources**: Associate a `.kicad_pcb` layout with each board for PCB-analysis tooling
+- **PCB Tools (kicad-cli)**: Headless design-rule checking, 3D board renders, and per-layer SVG export from `.kicad_pcb` layouts
 - **Smart Caching**: Optional file caching of parsed schematics for faster repeated queries
 
 ## Installation
@@ -133,6 +134,23 @@ Configuration files are searched in priority order:
 | Tool | Description |
 |------|-------------|
 | `search_datasheet` | Resolve a manufacturer and part number to a datasheet URL |
+
+### PCB Layout (kicad-cli)
+
+These tools operate on the `.kicad_pcb` layout via KiCad's headless `kicad-cli`.
+The `source` argument accepts a configured board name (using its `pcb` path), a
+direct path to a `.kicad_pcb`, or a path to a `.kicad_sch` (resolved to its
+sibling `.kicad_pcb`).
+
+| Tool | Description |
+|------|-------------|
+| `pcb_drc` | Run Design Rule Check; returns violations grouped by rule with severities, mm coordinates, totals, and the JSON report path. **Fails closed** — a failed run returns an explicit error, never a false clean pass. Accepts `severity` and `max_violations` filters. |
+| `pcb_render` | Render the board in 3D to a PNG, returned as an inline image plus the saved file path. Camera controls: `side`, `zoom`, `rotate`, `pan`, `pivot`, `perspective`, `floor`, `width`, `height`, `quality`, `background`. |
+| `pcb_export_layers` | Export one SVG per layer (e.g. `F.Cu,B.Cu,Edge.Cuts`) and return the file paths. `fit` defaults to `board` (board-area only) for downstream cropping. |
+
+The underlying wrappers live in `kicad_mcp.kicad_cli` and are importable as plain
+functions, so non-MCP consumers (such as a crop/highlight tool that needs
+board-area-fitted per-layer SVGs) can call them directly.
 
 ## Usage Examples
 

@@ -496,10 +496,11 @@ class KiCadMCPConfig:
     def resolve_pcb_source(self, source: str) -> Path:
         """Resolve a PCB source to an existing .kicad_pcb file path.
 
-        Accepts either a configured board name (returns that board's ``pcb``
-        path) or a direct path to a ``.kicad_pcb`` file. This is the single
-        entry point PCB-analysis tools use to turn a user-supplied source into a
-        concrete file.
+        Accepts a configured board name (returns that board's ``pcb`` path), a
+        direct path to a ``.kicad_pcb`` file, or a path to a ``.kicad_sch``
+        schematic (resolved to its sibling ``.kicad_pcb`` layout). This is the
+        single entry point PCB-analysis tools use to turn a user-supplied source
+        into a concrete file.
 
         Args:
             source: A configured board name or a path to a .kicad_pcb file
@@ -528,8 +529,18 @@ class KiCadMCPConfig:
                 )
             return path
 
-        # Otherwise treat the source as a direct path to a .kicad_pcb file.
+        # Otherwise treat the source as a path. A schematic path resolves to its
+        # sibling .kicad_pcb layout (board.kicad_sch -> board.kicad_pcb), which
+        # is what PCB tools handed a schematic path expect.
         path = Path(source).expanduser()
+        if path.suffix == '.kicad_sch':
+            pcb_sibling = path.with_suffix('.kicad_pcb')
+            if pcb_sibling.exists():
+                return pcb_sibling
+            raise ValueError(
+                f"Schematic '{source}' has no sibling .kicad_pcb layout "
+                f"(expected {pcb_sibling}). {self._pcb_boards_hint()}"
+            )
         if path.exists():
             return path
 
