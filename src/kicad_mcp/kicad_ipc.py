@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from .config import KiCadMCPConfig
 
@@ -362,6 +362,13 @@ def _box_contains(box: Any, x_nm: int, y_nm: int) -> bool:
             lo_x, hi_x = sorted((min_x, max_x))
             lo_y, hi_y = sorted((min_y, max_y))
             return lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y
+
+    pos = getattr(box, "pos", None)
+    size = getattr(box, "size", None)
+    if pos is not None and size is not None:
+        lo_x, hi_x = sorted((pos.x, pos.x + size.x))
+        lo_y, hi_y = sorted((pos.y, pos.y + size.y))
+        return lo_x <= x_nm <= hi_x and lo_y <= y_nm <= hi_y
 
     left = getattr(box, "left", None)
     right = getattr(box, "right", None)
