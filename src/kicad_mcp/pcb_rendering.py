@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from .pcb_model import (
     Arc,
@@ -25,6 +25,8 @@ from .pcb_model import (
     Pad,
     PCBModel,
     Point,
+    SilkscreenGraphic,
+    SilkscreenText,
     Track,
     Via,
     Zone,
@@ -42,6 +44,8 @@ _LAYER_COLORS: dict[str, tuple[int, int, int, int]] = {
     "In4.Cu": (160, 110, 200, 235),
     "B.Cu": (55, 115, 210, 255),
     "Edge.Cuts": (28, 28, 28, 255),
+    "F.SilkS": (32, 32, 32, 255),
+    "B.SilkS": (32, 42, 72, 255),
 }
 _DIM_COLOR = (125, 125, 125, 105)
 _HIGHLIGHT_COLOR = (255, 230, 45, 255)
@@ -271,7 +275,7 @@ def _draw_board(
             continue
         if not _net_matches(zone.net, highlight_net):
             continue
-        color = color_override or _layer_color(
+        color = color_override or _zone_layer_color(
             _first_rendered_layer(zone.layers, layer_set)
         )
         if zone_alpha is not None:
@@ -313,6 +317,14 @@ def _draw_board(
             layer = _first_rendered_layer(pad.layers, layer_set)
             color = color_override or _layer_color(layer)
             _draw_pad(draw, transform, pad, color)
+
+    if highlight_net is None:
+        for fp in model.footprints:
+            for graphic in fp.silkscreen_graphics:
+                if graphic.layer in layer_set:
+                    _draw_silkscreen_graphic(draw, transform, graphic)
+            if fp.reference_text is not None and fp.reference_text.layer in layer_set:
+                _draw_silkscreen_text(draw, transform, fp.reference_text)
 
     if "Edge.Cuts" in layer_set and highlight_net is None:
         _draw_edge_box(model, draw, transform)
@@ -370,9 +382,48 @@ def _draw_pad(
     else:
         points = _rotated_rect_points(cx, cy, w, h, -pad.rotation)
         draw.polygon(points, fill=color)
-    if pad.drill and pad.drill > 0:
-        dr = transform.length(pad.drill / 2.0)
-        draw.ellipse((cx - dr, cy - dr, cx + dr, cy + dr), fill=(248, 248, 244, 230))
+
+
+def _draw_silkscreen_graphic(
+    draw: ImageDraw.ImageDraw,
+    transform: _Transform,
+    graphic: SilkscreenGraphic,
+) -> None:
+    color = _layer_color(graphic.layer)
+    width = round(transform.length(graphic.width))
+    points = [transform.point(p) for p in graphic.points]
+    if graphic.kind == "line" and len(points) == 2:
+        draw.line(points, fill=color, width=width)
+    elif graphic.kind == "polyline" and len(points) >= 2:
+        draw.line(points, fill=color, width=width)
+    elif graphic.kind == "polygon" and len(points) >= 3:
+        if graphic.fill:
+            draw.polygon(points, fill=color)
+        draw.line([*points, points[0]], fill=color, width=width)
+    elif graphic.kind == "circle" and len(graphic.points) == 2:
+        center = graphic.points[0]
+        edge = graphic.points[1]
+        cx, cy = transform.point(center)
+        radius = transform.length(center.distance_to(edge))
+        box = (cx - radius, cy - radius, cx + radius, cy + radius)
+        if graphic.fill:
+            draw.ellipse(box, fill=color)
+        draw.ellipse(box, outline=color, width=width)
+    elif graphic.kind == "arc" and len(graphic.points) == 3:
+        arc_points = [transform.point(p) for p in _arc_points_from_three(*graphic.points)]
+        if len(arc_points) > 1:
+            draw.line(arc_points, fill=color, width=width)
+
+
+def _draw_silkscreen_text(
+    draw: ImageDraw.ImageDraw,
+    transform: _Transform,
+    text: SilkscreenText,
+) -> None:
+    x, y = transform.point(text.position)
+    color = _layer_color(text.layer)
+    font = ImageFont.load_default()
+    draw.text((x, y), text.text, fill=color, font=font, anchor="mm")
 
 
 def _draw_edge_box(
@@ -388,13 +439,19 @@ def _draw_edge_box(
 
 
 def _arc_points(arc: Arc, steps: int = 48) -> list[Point]:
-    circle = _circle_from_points(arc.start, arc.mid, arc.end)
+    return _arc_points_from_three(arc.start, arc.mid, arc.end, steps=steps)
+
+
+def _arc_points_from_three(
+    start: Point, mid: Point, end: Point, steps: int = 48
+) -> list[Point]:
+    circle = _circle_from_points(start, mid, end)
     if circle is None:
-        return [arc.start, arc.mid, arc.end]
+        return [start, mid, end]
     cx, cy, radius = circle
-    a0 = math.atan2(arc.start.y - cy, arc.start.x - cx)
-    am = math.atan2(arc.mid.y - cy, arc.mid.x - cx)
-    a1 = math.atan2(arc.end.y - cy, arc.end.x - cx)
+    a0 = math.atan2(start.y - cy, start.x - cx)
+    am = math.atan2(mid.y - cy, mid.x - cx)
+    a1 = math.atan2(end.y - cy, end.x - cx)
     ccw_delta = (a1 - a0) % (2 * math.pi)
     ccw_mid = (am - a0) % (2 * math.pi)
     if ccw_mid <= ccw_delta:
@@ -463,6 +520,23 @@ def _layer_color(layer: str | None) -> tuple[int, int, int, int]:
     if layer is None:
         return (90, 90, 90, 255)
     return _LAYER_COLORS.get(layer, (90, 90, 90, 220))
+
+
+def _zone_layer_color(layer: str | None) -> tuple[int, int, int, int]:
+    color = _layer_color(layer)
+    # Normal crop rendering draws pads and tracks over zones. Lightening and
+    # reducing saturation keeps same-layer copper visually related without
+    # letting a pour erase pads that sit inside it.
+    r, g, b, a = color
+    gray = round((r + g + b) / 3)
+    blend = 0.55
+    desaturated = (
+        round(r * (1 - blend) + gray * blend),
+        round(g * (1 - blend) + gray * blend),
+        round(b * (1 - blend) + gray * blend),
+    )
+    lightened = tuple(round(channel * 0.72 + 255 * 0.28) for channel in desaturated)
+    return (lightened[0], lightened[1], lightened[2], min(a, 205))
 
 
 def _layers_intersect(element_layers: Iterable[str], rendered_layers: set[str]) -> bool:
