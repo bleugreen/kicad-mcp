@@ -396,6 +396,8 @@ class PCBModel:
         if getattr(board, "general", None) is not None:
             board_thickness = getattr(board.general, "thickness", None)
 
+        reference_texts = cls._reference_text_specs(path) if path is not None else {}
+
         # Nets: number -> name.
         nets: dict[int, str] = {}
         for net in board.nets:
@@ -412,7 +414,7 @@ class PCBModel:
 
             pads: list[Pad] = []
             for pad in fp.pads:
-                dx, dy = _rotate_pad(float(pad.position.X), float(pad.position.Y), frot)
+                pad_position = _position_relative_to_footprint(fx, fy, frot, pad.position)
                 net_number = pad.net.number if pad.net is not None else None
                 net_name = pad.net.name if pad.net is not None else None
                 pad_angle = float(pad.position.angle or 0.0)
@@ -423,7 +425,7 @@ class PCBModel:
                         number=pad.number,
                         net_number=net_number,
                         net_name=net_name,
-                        position=Point(fx + dx, fy + dy),
+                        position=pad_position,
                         pad_type=pad.type,
                         shape=getattr(pad, "shape", None),
                         size=(
@@ -432,13 +434,19 @@ class PCBModel:
                             else None
                         ),
                         rotation=frot + pad_angle,
-                        drill=(
-                            float(pad_drill)
-                            if isinstance(pad_drill, int | float)
-                            else None
-                        ),
-                        layers=list(pad.layers or []),
+                        drill=_pad_drill_diameter(pad_drill),
+                        layers=_resolve_layer_tokens(list(pad.layers or []), layers),
                     )
+                )
+
+            reference_text = reference_texts.get(reference)
+            if reference_text is None and reference:
+                silk_layer = "B.SilkS" if fp.layer.startswith("B.") else "F.SilkS"
+                reference_text = SilkscreenText(
+                    text=reference,
+                    layer=silk_layer,
+                    position=Point(fx, fy),
+                    rotation=frot,
                 )
 
             footprints.append(
@@ -450,6 +458,8 @@ class PCBModel:
                     position=Point(fx, fy),
                     rotation=frot,
                     pads=pads,
+                    silkscreen_graphics=_footprint_silkscreen_graphics(fp, fx, fy, frot),
+                    reference_text=reference_text,
                 )
             )
 
@@ -534,6 +544,52 @@ class PCBModel:
             nets=nets,
             edge_points=edge_points,
         )
+
+    @staticmethod
+    def _reference_text_specs(path: Path) -> dict[str, SilkscreenText]:
+        """Read reference-designator text positions from the raw board file.
+
+        Kiutils exposes footprint properties as a simple name/value dict, which
+        is ideal for metadata but omits the `(at ...)` and `(layer ...)` fields
+        needed to place labels. This narrow raw s-expression pass recovers only
+        that display geometry and leaves the board model itself to kiutils.
+        """
+
+        try:
+            root = sexpdata.loads(path.read_text())
+        except Exception:
+            return {}
+
+        specs: dict[str, SilkscreenText] = {}
+        if not isinstance(root, list):
+            return specs
+
+        for entry in root:
+            if not _sexpr_is(entry, "footprint"):
+                continue
+            footprint_at = _sexpr_child(entry, "at")
+            if footprint_at is None or len(footprint_at) < 3:
+                continue
+            fx = _sexpr_float(footprint_at, 1, 0.0)
+            fy = _sexpr_float(footprint_at, 2, 0.0)
+            frot = _sexpr_float(footprint_at, 3, 0.0)
+            for child in entry:
+                if not _sexpr_is(child, "property") or len(child) < 3:
+                    continue
+                if child[1] != "Reference" or not isinstance(child[2], str):
+                    continue
+                at = _sexpr_child(child, "at")
+                layer_expr = _sexpr_child(child, "layer")
+                if at is None or len(at) < 3 or layer_expr is None or len(layer_expr) < 2:
+                    continue
+                dx, dy = _rotate_pad(_sexpr_float(at, 1, 0.0), _sexpr_float(at, 2, 0.0), frot)
+                specs[child[2]] = SilkscreenText(
+                    text=child[2],
+                    layer=str(layer_expr[1]),
+                    position=Point(fx + dx, fy + dy),
+                    rotation=frot + _sexpr_float(at, 3, 0.0),
+                )
+        return specs
 
     @staticmethod
     def _collect_edge_points(board: Board) -> list[tuple[float, float]]:
