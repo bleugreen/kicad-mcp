@@ -177,9 +177,9 @@ def test_net_copper_lookup_unknown_net(model):
 
 def test_top_nets(model):
     top = model.top_nets(5)
-    # GND has the most copper elements (track + via + zone + 2 pads = 5).
+    # GND has the most copper elements (track + via + zone + 3 pads = 6).
     assert top[0][1] == "GND"
-    assert top[0][2] == 5
+    assert top[0][2] == 6
     names = [name for _, name, _ in top]
     assert "SIG" in names and "VCC" in names
 
