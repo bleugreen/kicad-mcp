@@ -13,6 +13,8 @@ import subprocess
 import tempfile
 import os
 
+from .kicad_cli import find_kicad_cli
+
 
 @dataclass
 class Component:
@@ -101,25 +103,9 @@ class CircuitGraph:
         """
         self._filepath = filepath
 
-        # Find kicad-cli
+        # Find kicad-cli (shared discovery, honors the KICAD_CLI override)
         if not kicad_cli_path:
-            # Try common locations
-            possible_paths = [
-                "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",  # macOS
-                "/usr/bin/kicad-cli",  # Linux
-                "kicad-cli"  # In PATH
-            ]
-            for path in possible_paths:
-                try:
-                    result = subprocess.run([path, "--version"], capture_output=True, timeout=2)
-                    if result.returncode == 0:
-                        kicad_cli_path = path
-                        break
-                except:
-                    continue
-
-            if not kicad_cli_path:
-                raise RuntimeError("Could not find kicad-cli. Please install KiCad or provide the path.")
+            kicad_cli_path = find_kicad_cli()
 
         # Export netlist to temporary file
         with tempfile.NamedTemporaryFile(suffix='.net', delete=False) as tmp:
