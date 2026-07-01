@@ -7,9 +7,10 @@ without needing a running KiCad GUI.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .config import KiCadMCPConfig
 
@@ -178,8 +179,9 @@ class KiCadIPC:
 
     def _connect(self) -> Any:
         try:
+            from kipy.errors import ApiError
+            from kipy.errors import ConnectionError as KiCadConnectionError
             from kipy.kicad import KiCad
-            from kipy.errors import ApiError, ConnectionError as KiCadConnectionError
         except ImportError as exc:  # pragma: no cover - dependency is declared
             raise KiCadIPCError("kicad-python is not installed; install the kicad-python package") from exc
 
