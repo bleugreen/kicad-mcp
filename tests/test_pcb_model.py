@@ -6,6 +6,7 @@ board with known geometry:
 - Rectangular Edge.Cuts outline from (100,100) to (150,130) -> 50 x 30 mm.
 - R1 @ (110,110) rot 0 on F.Cu; pads 1->VCC, 2->SIG.
 - R2 @ (130,110) rot 90 on F.Cu; pads 1->SIG, 2->GND.
+- J1 @ (140,120) rot 0 on F.Cu; through-hole wildcard pad 1->GND.
 - U1 @ (120,120) rot 0 on B.Cu (bottom); pads 1->GND, 2->VCC, 3->SIG.
 - One F.Cu SIG track, one B.Cu GND track, one GND via, one B.Cu GND zone.
 """
@@ -63,6 +64,10 @@ def test_footprint_placement(model):
     assert u1.side == "bottom"
     assert len(u1.pads) == 3
 
+    j1 = model.footprint("J1")
+    assert j1.side == "top"
+    assert len(j1.pads) == 1
+
     assert model.footprint("DOES_NOT_EXIST") is None
 
 
@@ -100,6 +105,25 @@ def test_pad_and_zone_render_geometry(model):
     ]
 
 
+def test_wildcard_pad_layers_are_resolved(model):
+    j1_pad = model.footprint("J1").pads[0]
+    assert j1_pad.layers == ["F.Cu", "B.Cu", "F.Mask", "B.Mask"]
+    assert j1_pad.drill == pytest.approx(0.6)
+
+
+def test_footprint_silkscreen_geometry_and_reference_text(model):
+    j1 = model.footprint("J1")
+    assert len(j1.silkscreen_graphics) == 4
+    assert {graphic.layer for graphic in j1.silkscreen_graphics} == {"F.SilkS"}
+    assert j1.silkscreen_graphics[0].points[0].as_tuple() == pytest.approx(
+        (138.8, 118.8)
+    )
+    assert j1.reference_text is not None
+    assert j1.reference_text.text == "J1"
+    assert j1.reference_text.layer == "F.SilkS"
+    assert j1.reference_text.position.as_tuple() == pytest.approx((140.0, 118.0))
+
+
 def test_footprints_near(model):
     # U1 is sqrt(200) ~= 14.14 mm from R1; R2 is exactly 20 mm.
     near_15 = model.footprints_near("R1", 15.0)
@@ -128,9 +152,9 @@ def test_net_copper_lookup_by_name_and_number(model):
     assert len(gnd["vias"]) == 1
     assert len(gnd["zones"]) == 1
     assert len(gnd["arcs"]) == 0
-    # GND pads: R2 pad 2 and U1 pad 1.
+    # GND pads: R2 pad 2, J1 pad 1, and U1 pad 1.
     gnd_pads = {(ref, pad.number) for ref, pad in gnd["pads"]}
-    assert gnd_pads == {("R2", "2"), ("U1", "1")}
+    assert gnd_pads == {("R2", "2"), ("J1", "1"), ("U1", "1")}
 
     # Looking up by net number gives the same result.
     assert model.net_copper_elements(1)["pads"] and (
@@ -163,7 +187,7 @@ def test_top_nets(model):
 def test_layer_element_counts(model):
     counts = model.layer_element_counts()
     assert set(counts) == {"F.Cu", "B.Cu"}
-    assert counts["F.Cu"]["footprints"] == 2  # R1, R2
+    assert counts["F.Cu"]["footprints"] == 3  # R1, R2, J1
     assert counts["B.Cu"]["footprints"] == 1  # U1
     assert counts["F.Cu"]["tracks"] == 4
     assert counts["B.Cu"]["tracks"] == 1
@@ -171,6 +195,8 @@ def test_layer_element_counts(model):
     # The via spans F.Cu and B.Cu, so it is counted on both.
     assert counts["F.Cu"]["vias"] == 1
     assert counts["B.Cu"]["vias"] == 1
+    assert counts["F.Cu"]["pads"] == 5
+    assert counts["B.Cu"]["pads"] == 4
 
 
 def test_track_via_zone_details(model):
