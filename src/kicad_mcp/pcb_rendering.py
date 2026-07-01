@@ -424,7 +424,8 @@ def _draw_silkscreen_text(
 ) -> None:
     x, y = transform.point(text.position)
     color = _layer_color(text.layer)
-    font = ImageFont.load_default()
+    font_size = max(8, min(72, round(transform.length(1.1))))
+    font = ImageFont.load_default(size=font_size)
     draw.text((x, y), text.text, fill=color, font=font, anchor="mm")
 
 
