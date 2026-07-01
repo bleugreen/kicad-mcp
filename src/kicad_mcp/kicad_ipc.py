@@ -209,7 +209,8 @@ class KiCadIPC:
             return kicad
         except KiCadConnectionError as exc:
             raise KiCadIPCError(
-                f"Could not reach a running KiCad IPC API server: {exc}. {ENABLE_API_HINT}",
+                "Could not reach a running KiCad IPC API server: "
+                f"{exc}. {ENABLE_API_HINT}",
                 socket_path=socket_path,
             ) from exc
         except ApiError as exc:

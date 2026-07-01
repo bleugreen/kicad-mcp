@@ -42,7 +42,8 @@ class FakeTrack:
 class FakeFailingIPC:
     def session(self):
         raise KiCadIPCError(
-            "Could not reach a running KiCad IPC API server. Enable KiCad API in KiCad Preferences → Plugins.",
+            "Could not reach a running KiCad IPC API server. "
+            "Enable KiCad API in KiCad Preferences → Plugins.",
             socket_path="ipc:///tmp/kicad/api.sock",
         )
 
