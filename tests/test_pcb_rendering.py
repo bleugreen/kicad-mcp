@@ -76,6 +76,41 @@ def test_highlight_net_pixel_differs_from_empty_region(model, tmp_path):
     assert track_pixel[0] > empty_pixel[0]
 
 
+def test_crop_draws_wildcard_through_hole_pad_on_copper_layer(model, tmp_path):
+    result = pcb_rendering.render_crop(
+        model,
+        x_mm=137.0,
+        y_mm=117.0,
+        width_mm=6.0,
+        height_mm=6.0,
+        layers=["B.Cu"],
+        width_px=300,
+        output_dir=str(tmp_path),
+    )
+
+    pad_center = _pixel_at_mm(result.path, result.bbox, 140.0, 120.0)
+    assert pad_center == pcb_rendering._layer_color("B.Cu")
+
+
+def test_crop_distinguishes_pad_inside_zone_from_bare_zone(model, tmp_path):
+    result = pcb_rendering.render_crop(
+        model,
+        x_mm=115.0,
+        y_mm=116.0,
+        width_mm=25.0,
+        height_mm=10.0,
+        layers=["B.Cu"],
+        width_px=500,
+        output_dir=str(tmp_path),
+    )
+
+    pad_pixel = _pixel_at_mm(result.path, result.bbox, 119.1, 119.0)
+    zone_pixel = _pixel_at_mm(result.path, result.bbox, 130.0, 123.0)
+    assert pad_pixel == pcb_rendering._layer_color("B.Cu")
+    assert zone_pixel == pcb_rendering._zone_layer_color("B.Cu")
+    assert pad_pixel != zone_pixel
+
+
 @pytest.mark.asyncio
 async def test_server_pcb_crop_returns_image(tmp_path):
     server = KiCadMCPServer()
