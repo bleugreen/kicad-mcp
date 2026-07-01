@@ -137,7 +137,15 @@ class KiCadIPC:
         if net_obj is None:
             raise ValueError(f"Net '{net}' was not found in the live board")
 
-        items = list(board.get_items_by_net(net_obj, types=self._copper_item_types()))
+        # KiCad 9.0.7's IPC server has no handler for GetItemsByNet (verified
+        # against a live session), even though kipy 0.7.1 exposes it. Fetch the
+        # copper items and filter by net client-side instead.
+        net_name = getattr(net_obj, "name", str(net))
+        items = [
+            item
+            for item in board.get_items(self._copper_item_types())
+            if net_name in self._item_nets(item)
+        ]
         if not items:
             raise ValueError(
                 f"Net '{net}' has no selectable copper items in the live board"
