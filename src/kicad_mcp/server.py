@@ -11,7 +11,7 @@ from .circuit_graph import CircuitGraph
 from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
-from . import kicad_cli, pcb_rendering
+from . import __version__, kicad_cli, pcb_rendering
 from .kicad_cli import KiCadCLIError
 from .kicad_ipc import KiCadIPC, KiCadIPCError, format_selection, format_session
 from .pcb_model import PCBModel, load_pcb_model
@@ -1356,7 +1356,7 @@ class KiCadMCPServer:
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
             init_options = InitializationOptions(
                 server_name="kicad-mcp",
-                server_version="0.2.0",
+                server_version=__version__,
                 capabilities=self.server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
