@@ -7,6 +7,11 @@ test boards. This module flattens kiutils' nested objects into small, stable
 dataclasses and layers placement/geometry queries on top of them, so the rest
 of the codebase (and the MCP tools) never depends on kiutils internals.
 
+One kiutils asymmetry to remember when extending the parse: a footprint pad exposes
+``.net`` as a ``Net(number, name)`` object, whereas tracks, vias, and zones expose
+``.net`` as a plain integer net number. This module normalises both into its own
+``nets`` number->name mapping so downstream code never has to special-case it.
+
 Parsed models are cached in memory keyed by ``(absolute path, mtime)`` via
 :func:`load_pcb_model`, so repeated tool calls against an unchanged file do not
 reparse. This is intentionally separate from the pickle-on-disk cache used for

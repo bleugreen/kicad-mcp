@@ -19,6 +19,10 @@ from dataclasses import dataclass, field
 
 from .pcb_model import Arc, Pad, PCBModel, Point, Track, Via, Zone
 
+# Endpoint join tolerance. Route joins are usually exact, but the pad-centre endpoint
+# coincidences observed on real project boards land within ~0.15 mm, so attachment
+# points closer than this are treated as the same copper node. This value is empirically
+# chosen from project boards rather than guessed.
 JOIN_TOLERANCE_MM = 0.15
 
 
