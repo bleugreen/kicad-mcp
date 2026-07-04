@@ -378,7 +378,9 @@ def diff_pair_coupled_impedance(
         gap = max(spacing - (p_width + n_width) / 2.0, 0.0)
         notes: list[str] = []
         try:
-            h, use_er = dielectric_height(model, layer, assumptions, er, dielectric_h_mm)
+            h, use_er = dielectric_height(
+                model, layer, assumptions, er, dielectric_h_mm
+            )
         except ValueError as exc:
             assumptions.append(f"coupled differential unavailable on {layer}: {exc}")
             continue

@@ -122,7 +122,7 @@ def test_diff_pair_impedance_degrades_when_coupled_stackup_missing() -> None:
     )
 
 
- def test_degradation_paths_name_assumptions_and_refusals() -> None:
+def test_degradation_paths_name_assumptions_and_refusals() -> None:
     two_layer = PCBModel(
         board_thickness=1.6,
         copper_layers=["F.Cu", "B.Cu"],
