@@ -687,6 +687,9 @@ class KiCadMCPServer:
         if name in PCB_ROUTE_TOOLS:
             return self._handle_pcb_route_tool(name, arguments)
 
+        if name in PCB_ELECTRICAL_TOOLS:
+            return self._handle_pcb_electrical_tool(name, arguments)
+
         if name in PCB_IMAGE_TOOLS:
             return self._handle_pcb_image_tool(name, arguments)
 
