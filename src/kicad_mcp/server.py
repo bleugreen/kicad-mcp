@@ -12,6 +12,7 @@ from .multi_board_graph import MultiBoardGraph
 from .config import KiCadMCPConfig
 from .datasheet_lookup import DatasheetFinder
 from . import __version__, kicad_cli, pcb_rendering
+from . import pcb_electrical
 from .kicad_cli import KiCadCLIError
 from .kicad_ipc import KiCadIPC, KiCadIPCError, format_selection, format_session
 from .pcb_model import PCBModel, load_pcb_model
@@ -33,6 +34,10 @@ PCB_MODEL_TOOLS = {"pcb_overview", "pcb_component", "pcb_components_near"}
 # Route-analysis PCB tools build on PCBModel copper elements and report routed
 # lengths/connectivity without invoking kicad-cli.
 PCB_ROUTE_TOOLS = {"pcb_net_route", "pcb_diff_pair", "pcb_net_lengths"}
+
+# Electrical estimate PCB tools derive ampacity and impedance tables from the
+# parsed model and route walk without invoking kicad-cli.
+PCB_ELECTRICAL_TOOLS = {"pcb_current_capacity", "pcb_impedance_estimate"}
 
 # PCB image tools render directly from PCBModel geometry to PNG ImageContent.
 PCB_IMAGE_TOOLS = {"pcb_crop", "pcb_highlight_net"}
@@ -460,6 +465,47 @@ class KiCadMCPServer:
                             "limit": {"type": "integer", "description": "Maximum number of matching nets to report", "default": 50}
                         },
                         "required": ["source", "pattern"]
+                    }
+                ),
+
+                types.Tool(
+                    name="pcb_current_capacity",
+                    description=(
+                        "Estimate current capacity for nets matching a glob or regex, "
+                        "sorted weakest first, using IPC-2152 conservative chart fits "
+                        "with IPC-2221 fallback."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "pattern": {"type": "string", "description": "Glob or regular expression matching net names"},
+                            "temp_rise_c": {"type": "number", "description": "Allowed copper temperature rise in °C", "default": 10},
+                            "min_current_a": {"type": "number", "description": "Optional pass/flag threshold in amps"},
+                            "plating_um": {"type": "number", "description": "Assumed via barrel plating thickness in µm", "default": 25},
+                            "limit": {"type": "integer", "description": "Maximum number of matching nets to report", "default": 50},
+                        },
+                        "required": ["source", "pattern"]
+                    }
+                ),
+                types.Tool(
+                    name="pcb_impedance_estimate",
+                    description=(
+                        "Estimate single-ended and differential impedance with IPC-2141 "
+                        "closed-form formulas for matching nets, or a hypothetical width/layer."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string", "description": "Board name from config OR path to a .kicad_pcb file"},
+                            "pattern": {"type": "string", "description": "Glob or regular expression matching net names"},
+                            "width_mm": {"type": "number", "description": "Hypothetical trace width in millimetres"},
+                            "layer": {"type": "string", "description": "Hypothetical trace layer, e.g. F.Cu"},
+                            "er": {"type": "number", "description": "Override dielectric constant"},
+                            "dielectric_h_mm": {"type": "number", "description": "Override dielectric height to reference plane in millimetres"},
+                            "limit": {"type": "integer", "description": "Maximum number of matching nets to report", "default": 50},
+                        },
+                        "required": ["source"]
                     }
                 ),
                 types.Tool(
@@ -968,6 +1014,70 @@ class KiCadMCPServer:
         except Exception as e:
             return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
 
+
+    def _handle_pcb_electrical_tool(
+        self, name: str, arguments: dict
+    ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+        """Dispatch derived electrical estimate PCB tools."""
+        source = arguments.get("source")
+        if not source:
+            return [types.TextContent(type="text", text="Error: source parameter is required")]
+        try:
+            model = self._load_pcb(source)
+            if name == "pcb_current_capacity":
+                pattern = arguments.get("pattern")
+                if not pattern:
+                    return [types.TextContent(type="text", text="Error: pattern parameter is required")]
+                reports = pcb_electrical.capacity_reports_for_pattern(
+                    model,
+                    pattern,
+                    temp_rise_c=float(arguments.get("temp_rise_c", 10.0)),
+                    plating_um=float(arguments.get("plating_um", 25.0)),
+                    limit=int(arguments.get("limit", 50)),
+                )
+                result = self._format_pcb_current_capacity(
+                    pattern,
+                    reports,
+                    int(arguments.get("limit", 50)),
+                    arguments.get("min_current_a"),
+                )
+            else:
+                pattern = arguments.get("pattern")
+                width = arguments.get("width_mm")
+                layer = arguments.get("layer")
+                er = arguments.get("er")
+                dielectric_h = arguments.get("dielectric_h_mm")
+                if pattern:
+                    report = pcb_electrical.impedance_reports_for_pattern(
+                        model,
+                        pattern,
+                        limit=int(arguments.get("limit", 50)),
+                        er=float(er) if er is not None else None,
+                        dielectric_h_mm=float(dielectric_h) if dielectric_h is not None else None,
+                    )
+                    result = self._format_pcb_impedance(pattern, report)
+                elif width is not None and layer:
+                    report = pcb_electrical.hypothetical_impedance(
+                        model,
+                        str(layer),
+                        float(width),
+                        er=float(er) if er is not None else None,
+                        dielectric_h_mm=float(dielectric_h) if dielectric_h is not None else None,
+                    )
+                    result = self._format_pcb_impedance("hypothetical trace", report)
+                else:
+                    return [
+                        types.TextContent(
+                            type="text",
+                            text="Error: pass either pattern or width_mm plus layer",
+                        )
+                    ]
+            return [types.TextContent(type="text", text=result)]
+        except (ValueError, FileNotFoundError) as e:
+            return [types.TextContent(type="text", text=f"Error: {e}")]
+        except Exception as e:
+            return [types.TextContent(type="text", text=f"Error executing {name}: {e}")]
+
     def _handle_pcb_image_tool(
         self, name: str, arguments: dict
     ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
@@ -1138,6 +1248,113 @@ class KiCadMCPServer:
             lines.append(
                 f"- {fp.reference} ({fp.value}) — {dist:.2f} mm [{fp.side}]"
             )
+        return "\n".join(lines)
+
+
+    @staticmethod
+    def _format_pcb_current_capacity(
+        pattern: str,
+        reports: list[pcb_electrical.NetCapacityReport],
+        limit: int,
+        min_current_a: object | None,
+    ) -> str:
+        threshold = float(min_current_a) if min_current_a is not None else None
+        lines = [
+            f"# Current Capacity Estimates: {pattern}",
+            "",
+            "Estimates use IPC-2152 conservative chart fits when in range, "
+            "falling back to IPC-2221; this is not thermal simulation.",
+            f"Matched {len(reports)} net(s), capped at {limit}.",
+        ]
+        if threshold is not None:
+            lines.append(f"Rows below {threshold:.3f} A are flagged with ⚠.")
+        lines.append("")
+        if not reports:
+            lines.append("No nets matched.")
+            return "\n".join(lines)
+        lines.append("| Net | Neck (width @ layer) | Est. max A (standard) | Via limit (A × n) | Length | Flags |")
+        lines.append("| --- | --- | ---: | --- | ---: | --- |")
+        for report in reports:
+            neck = report.neck
+            if neck is None:
+                neck_label = "no tracks"
+                current = "n/a"
+                fail = False
+            else:
+                neck_label = f"{neck.width_mm:.3f} mm @ {neck.layer}"
+                fail = threshold is not None and neck.estimated_a < threshold
+                current = f"{neck.estimated_a:.3f} ({neck.standard})"
+            via = "; ".join(
+                f"{item.per_via_a:.3f} × {item.count} ({item.span})"
+                for item in report.via_limits
+            ) or "none"
+            flags = list(report.flags)
+            if fail:
+                flags.insert(0, "⚠ below threshold")
+            lines.append(
+                f"| {report.net_name} | {neck_label} | {current} | {via} | "
+                f"{report.total_length_mm:.3f} mm | {', '.join(flags) or 'none'} |"
+            )
+        if len(reports) == 1:
+            report = reports[0]
+            lines.extend(["", f"## Segment detail: {report.net_name}", ""])
+            lines.append("| Layer | Width | Length | Copper | Area | IPC-2152 | IPC-2221 | Selected |")
+            lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+            for seg in report.segments:
+                ipc2152 = f"{seg.ipc2152_a:.3f} A" if seg.ipc2152_a is not None else "out of range"
+                lines.append(
+                    f"| {seg.layer} | {seg.width_mm:.3f} mm | {seg.length_mm:.3f} mm | "
+                    f"{seg.copper_thickness_mm:.3f} mm | {seg.area_mil2:.2f} mil² | "
+                    f"{ipc2152} | {seg.ipc2221_a:.3f} A | {seg.estimated_a:.3f} A ({seg.standard}) |"
+                )
+        assumptions = list(dict.fromkeys(a for report in reports for a in report.assumptions))
+        lines.extend(["", "## Assumptions", ""])
+        lines.extend(f"- {item}" for item in assumptions)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_pcb_impedance(
+        label: str, report: pcb_electrical.ImpedanceReport
+    ) -> str:
+        lines = [
+            f"# Impedance Estimate: {label}",
+            "",
+            "IPC-2141 closed-form estimate — catches a 90 Ω pair routed as "
+            "60 Ω; not a field solver.",
+            "",
+        ]
+        if report.messages:
+            lines.extend(f"- {message}" for message in report.messages)
+            lines.append("")
+        if not report.rows:
+            lines.append("No impedance rows available.")
+        else:
+            lines.append("| Net | Layer | Width | Z0 (Ω) | Model | Notes |")
+            lines.append("| --- | --- | ---: | ---: | --- | --- |")
+            for row in report.rows:
+                z0 = f"{row.z0_ohm:.2f}" if row.z0_ohm is not None else "n/a"
+                notes = list(row.notes)
+                if row.dielectric_h_mm is not None and row.er is not None:
+                    notes.append(f"h={row.dielectric_h_mm:.3f} mm, εr={row.er:.3f}")
+                lines.append(
+                    f"| {row.net_name} | {row.layer} | {row.width_mm:.3f} mm | "
+                    f"{z0} | {row.model} | {', '.join(notes) or 'none'} |"
+                )
+        if report.coupled_rows:
+            lines.extend(["", "## Coupled differential estimate", ""])
+            lines.append("| Layer | Derived gap | Center spacing | Zdiff (Ω) | Notes |")
+            lines.append("| --- | ---: | ---: | ---: | --- |")
+            for row in report.coupled_rows:
+                lines.append(
+                    f"| {row.layer} | {row.gap_mm:.3f} mm | "
+                    f"{row.spacing_center_mm:.3f} mm | {row.zdiff_ohm:.2f} | "
+                    f"{', '.join(row.notes) or 'none'} |"
+                )
+        lines.extend(["", "## Assumptions", ""])
+        if report.assumptions:
+            lines.extend(f"- {item}" for item in report.assumptions)
+        else:
+            lines.append("- none")
         return "\n".join(lines)
 
     @staticmethod
