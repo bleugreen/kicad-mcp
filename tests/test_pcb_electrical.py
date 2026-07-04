@@ -8,21 +8,17 @@ from pathlib import Path
 import pytest
 
 from kicad_mcp.pcb_electrical import (
-    _IPC2152_AREAS,
-    _IPC2152_DELTAS,
-    _IPC2152_GRID,
     capacity_reports_for_pattern,
     coupled_differential,
     dielectric_height,
     impedance_reports_for_pattern,
-    ipc2152_max_current,
     ipc2221_max_current,
     microstrip_z0,
     net_current_capacity,
     net_impedance,
     stripline_z0,
 )
-from kicad_mcp.pcb_model import PCBModel, StackupLayer
+from kicad_mcp.pcb_model import PCBModel, Point, StackupLayer, Track
 from kicad_mcp.pcb_route import analyze_net_route
 from kicad_mcp.server import KiCadMCPServer
 
@@ -48,17 +44,26 @@ def test_ipc2221_hand_computed_current() -> None:
     assert expected == pytest.approx(0.89, abs=0.01)
 
 
-def test_ipc2152_grid_round_trip_monotonic_and_out_of_range() -> None:
-    for area in _IPC2152_AREAS:
-        for delta_t in _IPC2152_DELTAS:
-            expected = _IPC2152_GRID[area][_IPC2152_DELTAS.index(delta_t)]
-            assert ipc2152_max_current(area, delta_t) == pytest.approx(expected)
-            assert expected <= ipc2221_max_current(area, delta_t, internal=False)
-
-    assert ipc2152_max_current(35.0, 25.0) > ipc2152_max_current(25.0, 25.0)
-    assert ipc2152_max_current(35.0, 30.0) > ipc2152_max_current(35.0, 20.0)
-    assert ipc2152_max_current(1.0, 10.0) is None
-    assert ipc2152_max_current(10.0, 5.0) is None
+def test_current_capacity_labels_ipc2221_curve_used() -> None:
+    model = PCBModel(
+        copper_layers=["F.Cu", "In1.Cu", "B.Cu"],
+        stackup=[
+            StackupLayer("F.Cu", "copper", 0.035),
+            StackupLayer("dielectric 1", "core", 0.2, epsilon_r=4.4),
+            StackupLayer("In1.Cu", "copper", 0.035),
+            StackupLayer("dielectric 2", "core", 0.2, epsilon_r=4.4),
+            StackupLayer("B.Cu", "copper", 0.035),
+        ],
+        nets={1: "PWR"},
+        tracks=[Track(1, "In1.Cu", 0.254, Point(0, 0), Point(10, 0))],
+    )
+    report = net_current_capacity(model, analyze_net_route(model, "PWR"))
+    assert report.neck is not None
+    assert report.neck.standard == "IPC-2221 internal"
+    assert report.neck.estimated_a == pytest.approx(
+        ipc2221_max_current(report.neck.area_mil2, 10.0, internal=True)
+    )
+    assert report.neck.estimated_a == pytest.approx(0.44, abs=0.02)
 
 
 def test_impedance_formula_points() -> None:
@@ -96,7 +101,28 @@ def test_synthetic_neck_and_diff_pair_spacing(model: PCBModel) -> None:
     )
 
 
-def test_degradation_paths_name_assumptions_and_refusals() -> None:
+def test_diff_pair_impedance_degrades_when_coupled_stackup_missing() -> None:
+    model = PCBModel(
+        copper_layers=["F.Cu", "In1.Cu", "B.Cu"],
+        nets={1: "DP_P", 2: "DP_N"},
+        tracks=[
+            Track(1, "In1.Cu", 0.2, Point(0, 0), Point(10, 0)),
+            Track(2, "In1.Cu", 0.2, Point(0, 1), Point(10, 1)),
+        ],
+    )
+
+    report = impedance_reports_for_pattern(model, "DP_*")
+
+    assert len(report.rows) == 2
+    assert all(row.z0_ohm is None for row in report.rows)
+    assert not report.coupled_rows
+    assert any(
+        "coupled differential unavailable on In1.Cu" in assumption
+        for assumption in report.assumptions
+    )
+
+
+ def test_degradation_paths_name_assumptions_and_refusals() -> None:
     two_layer = PCBModel(
         board_thickness=1.6,
         copper_layers=["F.Cu", "B.Cu"],
