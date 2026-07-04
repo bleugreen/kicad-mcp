@@ -102,7 +102,7 @@ class ImpedanceReport:
 
 def ipc2221_max_current(area_mil2: float, delta_t_c: float, internal: bool) -> float:
     k = 0.024 if internal else 0.048
-    return k * delta_t_c**0.44 * area_mil2**0.725
+    return float(k * delta_t_c**0.44 * area_mil2**0.725)
 
 
 def ipc2152_max_current(area_mil2: float, delta_t_c: float) -> float | None:
