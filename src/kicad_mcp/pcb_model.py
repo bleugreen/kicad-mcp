@@ -168,6 +168,7 @@ class StackupLayer:
     type: str | None = None
     thickness: float | None = None
     material: str | None = None
+    epsilon_r: float | None = None
 
 
 @dataclass(frozen=True)
@@ -433,6 +434,7 @@ class PCBModel:
                         type=getattr(sl, "type", None),
                         thickness=getattr(sl, "thickness", None),
                         material=getattr(sl, "material", None),
+                        epsilon_r=getattr(sl, "epsilonR", None),
                     )
                 )
 
