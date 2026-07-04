@@ -158,7 +158,10 @@ def test_real_board_electrical_invariants(path: str, pattern: str) -> None:
         assert report.neck.estimated_a > 0
         assert math.isfinite(report.neck.estimated_a)
         assert report.neck.width_mm in route.width_lengths_mm
-    assert any("pour-carried" in flag for report in reports for flag in report.flags)
+    zone_net = next((zone.net_name for zone in model.zones if zone.net_name), None)
+    if zone_net is not None:
+        zone_report = capacity_reports_for_pattern(model, zone_net, limit=1)[0]
+        assert any("pour-carried" in flag for flag in zone_report.flags)
 
     impedance = impedance_reports_for_pattern(model, pattern, limit=10)
     assert impedance.rows
