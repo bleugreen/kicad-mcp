@@ -27,9 +27,9 @@ DEFAULT_ER = 4.4
 # Digitized conservative/universal IPC-2152 chart points, reproduced in vendor
 # calculator documentation such as Sierra Circuits' trace-width/current tables.
 # Values are intentionally conservative relative to the IPC-2221 external curve.
-_IPC2152_DELTAS = [10.0, 20.0, 30.0, 45.0, 60.0, 75.0, 100.0]
-_IPC2152_AREAS = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
-_IPC2152_GRID = {
+_IPC2152_DELTAS: list[float] = [10.0, 20.0, 30.0, 45.0, 60.0, 75.0, 100.0]
+_IPC2152_AREAS: list[float] = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
+_IPC2152_GRID: dict[float, list[float]] = {
     area: [
         0.85 * ipc for ipc in [0.048 * dt**0.44 * area**0.725 for dt in _IPC2152_DELTAS]
     ]
@@ -206,7 +206,8 @@ def net_current_capacity(
     flags: list[str] = []
     if route.zones or route.connected_only_through_zone:
         flags.append(
-            "pour-carried: track neck may not be the true limit; pour cross-section is not modeled"
+            "pour-carried: track neck may not be the true limit; "
+            "pour cross-section is not modeled"
         )
     if any("copper thickness assumed" in item for item in assumptions):
         flags.append("assumed-copper")
@@ -273,14 +274,16 @@ def dielectric_height(
         return _height_from_stackup(model.stackup, layer, assumptions, er_override)
     if len(model.copper_layers) == 2 and model.board_thickness is not None:
         assumptions.append(
-            "dielectric height derived from 2-layer board thickness minus two 35 µm copper foils"
+            "dielectric height derived from 2-layer board thickness minus "
+            "two 35 µm copper foils"
         )
         er = er_override if er_override is not None else DEFAULT_ER
         if er_override is None:
             assumptions.append("εr assumed 4.4: no stackup dielectric data")
         return max(model.board_thickness - 2 * DEFAULT_COPPER_MM, 0.0), er
     raise ValueError(
-        f"Cannot estimate impedance on {layer}: missing stackup dielectric thickness and no 2-layer board thickness fallback"
+        f"Cannot estimate impedance on {layer}: missing stackup dielectric "
+        "thickness and no 2-layer board thickness fallback"
     )
 
 
@@ -409,10 +412,11 @@ def diff_pair_coupled_impedance(
     for layer in sorted(set(pos.layer_lengths_mm) & set(neg.layer_lengths_mm)):
         p_tracks = [t for t in pos_elems["tracks"] if t.layer == layer]
         n_tracks = [t for t in neg_elems["tracks"] if t.layer == layer]
-        distances = [
-            _nearest_track_center_distance(track, n_tracks) for track in p_tracks
-        ]
-        distances = [d for d in distances if d is not None]
+        distances: list[float] = []
+        for track in p_tracks:
+            distance = _nearest_track_center_distance(track, n_tracks)
+            if distance is not None:
+                distances.append(distance)
         if not distances:
             continue
         spacing = statistics.median(distances)
