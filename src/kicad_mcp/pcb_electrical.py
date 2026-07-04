@@ -24,19 +24,6 @@ DEFAULT_COPPER_MM = 0.035
 DEFAULT_PLATING_UM = 25.0
 DEFAULT_ER = 4.4
 
-# Digitized conservative/universal IPC-2152 chart points, reproduced in vendor
-# calculator documentation such as Sierra Circuits' trace-width/current tables.
-# Values are intentionally conservative relative to the IPC-2221 external curve.
-_IPC2152_DELTAS: list[float] = [10.0, 20.0, 30.0, 45.0, 60.0, 75.0, 100.0]
-_IPC2152_AREAS: list[float] = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
-_IPC2152_GRID: dict[float, list[float]] = {
-    area: [
-        0.85 * ipc for ipc in [0.048 * dt**0.44 * area**0.725 for dt in _IPC2152_DELTAS]
-    ]
-    for area in _IPC2152_AREAS
-}
-
-
 @dataclass(frozen=True)
 class CapacitySegment:
     layer: str
@@ -44,8 +31,6 @@ class CapacitySegment:
     length_mm: float
     copper_thickness_mm: float
     area_mil2: float
-    ipc2152_a: float | None
-    ipc2221_a: float
     estimated_a: float
     standard: str
     internal: bool
@@ -105,37 +90,6 @@ def ipc2221_max_current(area_mil2: float, delta_t_c: float, internal: bool) -> f
     return float(k * delta_t_c**0.44 * area_mil2**0.725)
 
 
-def ipc2152_max_current(area_mil2: float, delta_t_c: float) -> float | None:
-    if not (_IPC2152_AREAS[0] <= area_mil2 <= _IPC2152_AREAS[-1]):
-        return None
-    if not (_IPC2152_DELTAS[0] <= delta_t_c <= _IPC2152_DELTAS[-1]):
-        return None
-    lo_a, hi_a = _bracket(_IPC2152_AREAS, area_mil2)
-    lo_t, hi_t = _bracket(_IPC2152_DELTAS, delta_t_c)
-    if lo_a == hi_a and lo_t == hi_t:
-        return _IPC2152_GRID[lo_a][_IPC2152_DELTAS.index(lo_t)]
-
-    def log_i(area: float, dt: float) -> float:
-        return math.log(_IPC2152_GRID[area][_IPC2152_DELTAS.index(dt)])
-
-    la = math.log(area_mil2)
-    lt = math.log(delta_t_c)
-    la0, la1 = math.log(lo_a), math.log(hi_a)
-    lt0, lt1 = math.log(lo_t), math.log(hi_t)
-    wa = 0.0 if la0 == la1 else (la - la0) / (la1 - la0)
-    wt = 0.0 if lt0 == lt1 else (lt - lt0) / (lt1 - lt0)
-    v00 = log_i(lo_a, lo_t)
-    v01 = log_i(lo_a, hi_t)
-    v10 = log_i(hi_a, lo_t)
-    v11 = log_i(hi_a, hi_t)
-    return math.exp(
-        (1 - wa) * (1 - wt) * v00
-        + (1 - wa) * wt * v01
-        + wa * (1 - wt) * v10
-        + wa * wt * v11
-    )
-
-
 def copper_thickness_mm(model: PCBModel, layer: str, assumptions: list[str]) -> float:
     for stack_layer in model.stackup:
         if stack_layer.name == layer and stack_layer.thickness is not None:
@@ -172,10 +126,9 @@ def net_current_capacity(
                 seen_assumptions.add(assumption)
         area_mil2 = width * thickness * MM_TO_MIL * MM_TO_MIL
         internal = not _is_external_copper(layer)
-        i2221 = ipc2221_max_current(area_mil2, temp_rise_c, internal=internal)
-        i2152 = ipc2152_max_current(area_mil2, temp_rise_c)
-        estimated = i2152 if i2152 is not None else i2221
-        standard = "IPC-2152 conservative" if i2152 is not None else "IPC-2221"
+        estimated = ipc2221_max_current(area_mil2, temp_rise_c, internal=internal)
+        curve = "internal" if internal else "external"
+        standard = f"IPC-2221 {curve}"
         segments.append(
             CapacitySegment(
                 layer,
@@ -183,8 +136,6 @@ def net_current_capacity(
                 length,
                 thickness,
                 area_mil2,
-                i2152,
-                i2221,
                 estimated,
                 standard,
                 internal,
@@ -425,7 +376,12 @@ def diff_pair_coupled_impedance(
         if p_width is None or n_width is None:
             continue
         gap = max(spacing - (p_width + n_width) / 2.0, 0.0)
-        h, use_er = dielectric_height(model, layer, assumptions, er, dielectric_h_mm)
+        notes: list[str] = []
+        try:
+            h, use_er = dielectric_height(model, layer, assumptions, er, dielectric_h_mm)
+        except ValueError as exc:
+            assumptions.append(f"coupled differential unavailable on {layer}: {exc}")
+            continue
         t = copper_thickness_mm(model, layer, assumptions)
         micro = _is_external_copper(layer)
         z0 = (
@@ -433,7 +389,6 @@ def diff_pair_coupled_impedance(
             if micro
             else stripline_z0((p_width + n_width) / 2.0, t, h, use_er)
         )
-        notes: list[str] = []
         if len(distances) > 1 and statistics.pstdev(distances) > max(
             0.1 * spacing, 0.05
         ):
@@ -448,15 +403,6 @@ def diff_pair_coupled_impedance(
             )
         )
     return rows
-
-
-def _bracket(values: list[float], value: float) -> tuple[float, float]:
-    for idx, item in enumerate(values):
-        if value == item:
-            return item, item
-        if value < item:
-            return values[idx - 1], item
-    return values[-1], values[-1]
 
 
 def _is_external_copper(layer: str) -> bool:

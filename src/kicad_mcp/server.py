@@ -472,8 +472,7 @@ class KiCadMCPServer:
                     name="pcb_current_capacity",
                     description=(
                         "Estimate current capacity for nets matching a glob or regex, "
-                        "sorted weakest first, using IPC-2152 conservative chart fits "
-                        "with IPC-2221 fallback."
+                        "sorted weakest first, using IPC-2221 trace current formulas."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1265,8 +1264,8 @@ class KiCadMCPServer:
         lines = [
             f"# Current Capacity Estimates: {pattern}",
             "",
-            "Estimates use IPC-2152 conservative chart fits when in range, "
-            "falling back to IPC-2221; this is not thermal simulation.",
+            "Estimates use IPC-2221 trace current formulas; this is not "
+            "thermal simulation.",
             f"Matched {len(reports)} net(s), capped at {limit}.",
         ]
         if threshold is not None:
@@ -1301,14 +1300,13 @@ class KiCadMCPServer:
         if len(reports) == 1:
             report = reports[0]
             lines.extend(["", f"## Segment detail: {report.net_name}", ""])
-            lines.append("| Layer | Width | Length | Copper | Area | IPC-2152 | IPC-2221 | Selected |")
-            lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+            lines.append("| Layer | Width | Length | Copper | Area | Selected |")
+            lines.append("| --- | ---: | ---: | ---: | ---: | --- |")
             for seg in report.segments:
-                ipc2152 = f"{seg.ipc2152_a:.3f} A" if seg.ipc2152_a is not None else "out of range"
                 lines.append(
                     f"| {seg.layer} | {seg.width_mm:.3f} mm | {seg.length_mm:.3f} mm | "
                     f"{seg.copper_thickness_mm:.3f} mm | {seg.area_mil2:.2f} mil² | "
-                    f"{ipc2152} | {seg.ipc2221_a:.3f} A | {seg.estimated_a:.3f} A ({seg.standard}) |"
+                    f"{seg.estimated_a:.3f} A ({seg.standard}) |"
                 )
         assumptions = list(dict.fromkeys(a for report in reports for a in report.assumptions))
         lines.extend(["", "## Assumptions", ""])

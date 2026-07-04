@@ -171,12 +171,12 @@ in `kicad_mcp.pcb_model`; direct 2D PNG rendering lives in
 | `pcb_net_route` | Routed copper length, layer usage, widths, vias, endpoints, and copper-island connectivity for one net |
 | `pcb_diff_pair` | Length and via-count comparison for a differential pair, with pair-name inference for common `_P`/`_N` and `+`/`-` conventions |
 | `pcb_net_lengths` | Sorted routed lengths for nets matching a glob or regular expression |
-| `pcb_current_capacity` | Pattern-first current-capacity estimates for matched nets, sorted by weakest neck, using IPC-2152 conservative chart fits with IPC-2221 fallback |
+| `pcb_current_capacity` | Pattern-first current-capacity estimates for matched nets, sorted by weakest neck, using IPC-2221 trace current formulas |
 | `pcb_impedance_estimate` | Pattern-first or hypothetical trace IPC-2141 impedance estimates, including coupled differential estimates when a matched pair is resolved |
 | `pcb_crop` | Inline PNG crop of a component, a net's copper bounds, or an explicit board-coordinate window; returns MCP ImageContent plus the saved path |
 | `pcb_highlight_net` | Inline PNG with one net drawn bright over dimmed board copper, including lower-alpha zones; returns MCP ImageContent plus the saved path |
 
-### Electrical estimates — IPC-2152/2221 ampacity and IPC-2141 impedance
+### Electrical estimates — IPC-2221 ampacity and IPC-2141 impedance
 
 `pcb_current_capacity` and `pcb_impedance_estimate` are estimate tools, not
 thermal simulation or a field solver. They use the same pattern-first behavior as
@@ -185,10 +185,9 @@ across all matches. When exactly one net matches, `pcb_current_capacity` appends
 per-segment detail for each `(layer, width)` geometry.
 
 `pcb_current_capacity` estimates each routed track geometry from copper width,
-stackup copper thickness, layer type, and requested temperature rise. It uses the
-IPC-2152 conservative chart fit when the trace area and temperature rise are
-inside the encoded chart, and names the IPC-2221 fallback when outside that
-range. Rows sort ascending by estimated current so the weakest necks are first;
+stackup copper thickness, layer type, and requested temperature rise using the
+IPC-2221 internal or external trace current formula as appropriate for the layer.
+Rows sort ascending by estimated current so the weakest necks are first;
 `min_current_a` turns the table into a pass/flag check. Via barrels are estimated
 with IPC-2221 using a stated plating assumption.
 
