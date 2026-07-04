@@ -14,7 +14,6 @@ from kicad_mcp.pcb_electrical import (
     capacity_reports_for_pattern,
     coupled_differential,
     dielectric_height,
-    diff_pair_coupled_impedance,
     impedance_reports_for_pattern,
     ipc2152_max_current,
     ipc2221_max_current,
@@ -43,7 +42,9 @@ def test_ipc2221_hand_computed_current() -> None:
     area = 10.0 * 1.378
     expected = 0.048 * 10.0**0.44 * area**0.725
     assert ipc2221_max_current(area, 10.0, internal=False) == pytest.approx(expected)
-    assert ipc2221_max_current(area, 10.0, internal=True) == pytest.approx(expected / 2.0)
+    assert ipc2221_max_current(area, 10.0, internal=True) == pytest.approx(
+        expected / 2.0
+    )
     assert expected == pytest.approx(0.89, abs=0.01)
 
 
@@ -61,14 +62,16 @@ def test_ipc2152_grid_round_trip_monotonic_and_out_of_range() -> None:
 
 
 def test_impedance_formula_points() -> None:
-    microstrip = 87.0 / math.sqrt(4.5 + 1.41) * math.log(
-        5.98 * 1.51 / (0.8 * 0.2 + 0.035)
+    microstrip = (
+        87.0 / math.sqrt(4.5 + 1.41) * math.log(5.98 * 1.51 / (0.8 * 0.2 + 0.035))
     )
     assert microstrip_z0(0.2, 0.035, 1.51, 4.5) == pytest.approx(microstrip)
     assert microstrip_z0(2.8, 0.035, 1.51, 4.5) == pytest.approx(50.0, abs=2.0)
 
-    stripline = 60.0 / math.sqrt(4.2) * math.log(
-        4.0 * 0.2 / (0.67 * math.pi * (0.8 * 0.12 + 0.035))
+    stripline = (
+        60.0
+        / math.sqrt(4.2)
+        * math.log(4.0 * 0.2 / (0.67 * math.pi * (0.8 * 0.12 + 0.035)))
     )
     assert stripline_z0(0.12, 0.035, 0.2, 4.2) == pytest.approx(stripline)
     z0 = 90.0
@@ -88,7 +91,9 @@ def test_synthetic_neck_and_diff_pair_spacing(model: PCBModel) -> None:
     assert impedance.coupled_rows[0].gap_mm == pytest.approx(0.8)
 
     rows = net_impedance(model, route).rows
-    assert {(row.layer, row.width_mm) for row in rows} == set(route.layer_width_lengths_mm)
+    assert {(row.layer, row.width_mm) for row in rows} == set(
+        route.layer_width_lengths_mm
+    )
 
 
 def test_degradation_paths_name_assumptions_and_refusals() -> None:

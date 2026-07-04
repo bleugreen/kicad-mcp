@@ -12,7 +12,12 @@ import statistics
 from dataclasses import dataclass, field
 
 from .pcb_model import PCBModel, Point, StackupLayer, Track, Via
-from .pcb_route import RouteAnalysis, analyze_net_route, matching_net_names, resolve_diff_pair
+from .pcb_route import (
+    RouteAnalysis,
+    analyze_net_route,
+    matching_net_names,
+    resolve_diff_pair,
+)
 
 MM_TO_MIL = 39.3700787402
 DEFAULT_COPPER_MM = 0.035
@@ -25,7 +30,9 @@ DEFAULT_ER = 4.4
 _IPC2152_DELTAS = [10.0, 20.0, 30.0, 45.0, 60.0, 75.0, 100.0]
 _IPC2152_AREAS = [10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
 _IPC2152_GRID = {
-    area: [0.85 * ipc for ipc in [0.048 * dt**0.44 * area**0.725 for dt in _IPC2152_DELTAS]]
+    area: [
+        0.85 * ipc for ipc in [0.048 * dt**0.44 * area**0.725 for dt in _IPC2152_DELTAS]
+    ]
     for area in _IPC2152_AREAS
 }
 
@@ -139,7 +146,9 @@ def copper_thickness_mm(model: PCBModel, layer: str, assumptions: list[str]) -> 
     return DEFAULT_COPPER_MM
 
 
-def via_max_current(via: Via, delta_t_c: float, plating_um: float = DEFAULT_PLATING_UM) -> float:
+def via_max_current(
+    via: Via, delta_t_c: float, plating_um: float = DEFAULT_PLATING_UM
+) -> float:
     plating_mm = plating_um / 1000.0
     area_mil2 = math.pi * via.drill * plating_mm * MM_TO_MIL * MM_TO_MIL
     return ipc2221_max_current(area_mil2, delta_t_c, internal=True)
@@ -168,7 +177,18 @@ def net_current_capacity(
         estimated = i2152 if i2152 is not None else i2221
         standard = "IPC-2152 conservative" if i2152 is not None else "IPC-2221"
         segments.append(
-            CapacitySegment(layer, width, length, thickness, area_mil2, i2152, i2221, estimated, standard, internal)
+            CapacitySegment(
+                layer,
+                width,
+                length,
+                thickness,
+                area_mil2,
+                i2152,
+                i2221,
+                estimated,
+                standard,
+                internal,
+            )
         )
     neck = min(segments, key=lambda item: item.estimated_a) if segments else None
     elems = model.net_copper_elements(route.net_number)
@@ -176,17 +196,29 @@ def net_current_capacity(
     per_span: dict[str, list[float]] = {}
     for via in vias:
         span = " ↔ ".join(via.layers)
-        per_span.setdefault(span, []).append(via_max_current(via, temp_rise_c, plating_um))
+        per_span.setdefault(span, []).append(
+            via_max_current(via, temp_rise_c, plating_um)
+        )
     via_limits = [
         ViaCapacity(span, len(values), min(values), min(values) * len(values))
         for span, values in sorted(per_span.items())
     ]
     flags: list[str] = []
     if route.zones or route.connected_only_through_zone:
-        flags.append("pour-carried: track neck may not be the true limit; pour cross-section is not modeled")
+        flags.append(
+            "pour-carried: track neck may not be the true limit; pour cross-section is not modeled"
+        )
     if any("copper thickness assumed" in item for item in assumptions):
         flags.append("assumed-copper")
-    return NetCapacityReport(route.net_name, segments, neck, via_limits, assumptions, flags, route.total_length_mm)
+    return NetCapacityReport(
+        route.net_name,
+        segments,
+        neck,
+        via_limits,
+        assumptions,
+        flags,
+        route.total_length_mm,
+    )
 
 
 def capacity_reports_for_pattern(
@@ -197,10 +229,14 @@ def capacity_reports_for_pattern(
     limit: int = 50,
 ) -> list[NetCapacityReport]:
     reports = [
-        net_current_capacity(model, analyze_net_route(model, name), temp_rise_c, plating_um)
+        net_current_capacity(
+            model, analyze_net_route(model, name), temp_rise_c, plating_um
+        )
         for name in matching_net_names(model, pattern, limit)
     ]
-    return sorted(reports, key=lambda report: report.neck.estimated_a if report.neck else math.inf)
+    return sorted(
+        reports, key=lambda report: report.neck.estimated_a if report.neck else math.inf
+    )
 
 
 def microstrip_z0(w: float, t: float, h: float, er: float) -> float:
@@ -227,7 +263,9 @@ def dielectric_height(
     if dielectric_h_mm is not None:
         er = er_override if er_override is not None else DEFAULT_ER
         if er_override is None:
-            assumptions.append("εr assumed 4.4: explicit dielectric height supplied without εr")
+            assumptions.append(
+                "εr assumed 4.4: explicit dielectric height supplied without εr"
+            )
         return dielectric_h_mm, er
     if er_override is not None:
         assumptions.append(f"εr overridden by tool parameter: {er_override:g}")
@@ -257,17 +295,47 @@ def net_impedance(
     for (layer, width), length in route.layer_width_lengths_mm.items():
         notes: list[str] = []
         try:
-            h, use_er = dielectric_height(model, layer, assumptions, er, dielectric_h_mm)
+            h, use_er = dielectric_height(
+                model, layer, assumptions, er, dielectric_h_mm
+            )
             t = copper_thickness_mm(model, layer, assumptions)
             is_microstrip = _is_external_copper(layer)
-            z0 = microstrip_z0(width, t, h, use_er) if is_microstrip else stripline_z0(width, t, h, use_er)
+            z0 = (
+                microstrip_z0(width, t, h, use_er)
+                if is_microstrip
+                else stripline_z0(width, t, h, use_er)
+            )
             model_name = "microstrip" if is_microstrip else "stripline"
             ratio = width / h if h else math.inf
             if not (0.1 < ratio < 2.0) or not (1.0 < use_er < 15.0):
                 notes.append("outside IPC-2141 comfort zone")
-            rows.append(ImpedanceRow(route.net_name, layer, width, length, z0, model_name, h, use_er, notes))
+            rows.append(
+                ImpedanceRow(
+                    route.net_name,
+                    layer,
+                    width,
+                    length,
+                    z0,
+                    model_name,
+                    h,
+                    use_er,
+                    notes,
+                )
+            )
         except ValueError as exc:
-            rows.append(ImpedanceRow(route.net_name, layer, width, length, None, "unavailable", None, None, [str(exc)]))
+            rows.append(
+                ImpedanceRow(
+                    route.net_name,
+                    layer,
+                    width,
+                    length,
+                    None,
+                    "unavailable",
+                    None,
+                    None,
+                    [str(exc)],
+                )
+            )
     return ImpedanceReport(rows, _dedupe(assumptions))
 
 
@@ -279,7 +347,10 @@ def impedance_reports_for_pattern(
     dielectric_h_mm: float | None = None,
 ) -> ImpedanceReport:
     names = matching_net_names(model, pattern, limit)
-    reports = [net_impedance(model, analyze_net_route(model, name), er, dielectric_h_mm) for name in names]
+    reports = [
+        net_impedance(model, analyze_net_route(model, name), er, dielectric_h_mm)
+        for name in names
+    ]
     merged = ImpedanceReport(
         rows=[row for report in reports for row in report.rows],
         assumptions=_dedupe([a for report in reports for a in report.assumptions]),
@@ -288,7 +359,9 @@ def impedance_reports_for_pattern(
     if pair is not None:
         pos_route = analyze_net_route(model, pair[0])
         neg_route = analyze_net_route(model, pair[1])
-        merged.coupled_rows = diff_pair_coupled_impedance(model, pos_route, neg_route, er, dielectric_h_mm, merged.assumptions)
+        merged.coupled_rows = diff_pair_coupled_impedance(
+            model, pos_route, neg_route, er, dielectric_h_mm, merged.assumptions
+        )
     return merged
 
 
@@ -299,7 +372,26 @@ def hypothetical_impedance(
     er: float | None = None,
     dielectric_h_mm: float | None = None,
 ) -> ImpedanceReport:
-    route = RouteAnalysis(0, "hypothetical", 0.0, {}, 0, 0, 0, {}, {}, {(layer, width_mm): 0.0}, width_mm, width_mm, [layer], [], 0, False, [], [])
+    route = RouteAnalysis(
+        0,
+        "hypothetical",
+        0.0,
+        {},
+        0,
+        0,
+        0,
+        {},
+        {},
+        {(layer, width_mm): 0.0},
+        width_mm,
+        width_mm,
+        [layer],
+        [],
+        0,
+        False,
+        [],
+        [],
+    )
     return net_impedance(model, route, er, dielectric_h_mm)
 
 
@@ -317,7 +409,9 @@ def diff_pair_coupled_impedance(
     for layer in sorted(set(pos.layer_lengths_mm) & set(neg.layer_lengths_mm)):
         p_tracks = [t for t in pos_elems["tracks"] if t.layer == layer]
         n_tracks = [t for t in neg_elems["tracks"] if t.layer == layer]
-        distances = [_nearest_track_center_distance(track, n_tracks) for track in p_tracks]
+        distances = [
+            _nearest_track_center_distance(track, n_tracks) for track in p_tracks
+        ]
         distances = [d for d in distances if d is not None]
         if not distances:
             continue
@@ -330,11 +424,25 @@ def diff_pair_coupled_impedance(
         h, use_er = dielectric_height(model, layer, assumptions, er, dielectric_h_mm)
         t = copper_thickness_mm(model, layer, assumptions)
         micro = _is_external_copper(layer)
-        z0 = microstrip_z0((p_width + n_width) / 2.0, t, h, use_er) if micro else stripline_z0((p_width + n_width) / 2.0, t, h, use_er)
+        z0 = (
+            microstrip_z0((p_width + n_width) / 2.0, t, h, use_er)
+            if micro
+            else stripline_z0((p_width + n_width) / 2.0, t, h, use_er)
+        )
         notes: list[str] = []
-        if len(distances) > 1 and statistics.pstdev(distances) > max(0.1 * spacing, 0.05):
+        if len(distances) > 1 and statistics.pstdev(distances) > max(
+            0.1 * spacing, 0.05
+        ):
             notes.append("high spacing variance: loosely coupled or inconsistent gap")
-        rows.append(DiffCoupledRow(layer, spacing, gap, coupled_differential(z0, gap, h, microstrip=micro), notes))
+        rows.append(
+            DiffCoupledRow(
+                layer,
+                spacing,
+                gap,
+                coupled_differential(z0, gap, h, microstrip=micro),
+                notes,
+            )
+        )
     return rows
 
 
@@ -352,7 +460,10 @@ def _is_external_copper(layer: str) -> bool:
 
 
 def _height_from_stackup(
-    stackup: list[StackupLayer], layer: str, assumptions: list[str], er_override: float | None
+    stackup: list[StackupLayer],
+    layer: str,
+    assumptions: list[str],
+    er_override: float | None,
 ) -> tuple[float, float]:
     copper_indexes = [i for i, sl in enumerate(stackup) if sl.name.endswith(".Cu")]
     index_by_name = {sl.name: i for i, sl in enumerate(stackup)}
@@ -369,16 +480,27 @@ def _height_from_stackup(
     lo, hi = sorted((idx, ref_idx))
     dielectrics = [sl for sl in stackup[lo + 1 : hi] if not sl.name.endswith(".Cu")]
     if not dielectrics:
-        raise ValueError(f"no dielectric layers between {layer} and nearest copper reference")
+        raise ValueError(
+            f"no dielectric layers between {layer} and nearest copper reference"
+        )
     height = sum((sl.thickness or 0.0) for sl in dielectrics)
     if height <= 0:
-        raise ValueError(f"missing dielectric thickness between {layer} and nearest copper reference")
+        raise ValueError(
+            f"missing dielectric thickness between {layer} and nearest copper reference"
+        )
     if er_override is not None:
         return height, er_override
-    weighted = [(sl.epsilon_r, sl.thickness) for sl in dielectrics if sl.epsilon_r and sl.thickness]
+    weighted = [
+        (sl.epsilon_r, sl.thickness)
+        for sl in dielectrics
+        if sl.epsilon_r and sl.thickness
+    ]
     if weighted:
         total = sum(thickness for _, thickness in weighted if thickness is not None)
-        er = sum(er * thickness for er, thickness in weighted if thickness is not None) / total
+        er = (
+            sum(er * thickness for er, thickness in weighted if thickness is not None)
+            / total
+        )
     else:
         assumptions.append("εr assumed 4.4: no stackup dielectric data")
         er = DEFAULT_ER
@@ -390,7 +512,9 @@ def _dedupe(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _resolve_pair_from_matches(model: PCBModel, pattern: str, names: list[str]) -> tuple[str, str] | None:
+def _resolve_pair_from_matches(
+    model: PCBModel, pattern: str, names: list[str]
+) -> tuple[str, str] | None:
     try:
         if len(names) == 1:
             return resolve_diff_pair(model, names[0])
@@ -402,15 +526,23 @@ def _resolve_pair_from_matches(model: PCBModel, pattern: str, names: list[str]) 
 
 
 def _dominant_width(route: RouteAnalysis, layer: str) -> float | None:
-    candidates = [(width, length) for (candidate_layer, width), length in route.layer_width_lengths_mm.items() if candidate_layer == layer]
+    candidates = [
+        (width, length)
+        for (candidate_layer, width), length in route.layer_width_lengths_mm.items()
+        if candidate_layer == layer
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda item: item[1])[0]
 
 
 def _nearest_track_center_distance(track: Track, others: list[Track]) -> float | None:
-    midpoint = Point((track.start.x + track.end.x) / 2.0, (track.start.y + track.end.y) / 2.0)
-    distances = [_point_to_segment_distance(midpoint, other.start, other.end) for other in others]
+    midpoint = Point(
+        (track.start.x + track.end.x) / 2.0, (track.start.y + track.end.y) / 2.0
+    )
+    distances = [
+        _point_to_segment_distance(midpoint, other.start, other.end) for other in others
+    ]
     return min(distances) if distances else None
 
 
@@ -420,6 +552,8 @@ def _point_to_segment_distance(point: Point, start: Point, end: Point) -> float:
     length2 = dx * dx + dy * dy
     if length2 == 0:
         return point.distance_to(start)
-    u = max(0.0, min(1.0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / length2))
+    u = max(
+        0.0, min(1.0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / length2)
+    )
     projected = Point(start.x + u * dx, start.y + u * dy)
     return point.distance_to(projected)
