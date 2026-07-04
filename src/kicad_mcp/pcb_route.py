@@ -70,6 +70,7 @@ class RouteAnalysis:
     via_count: int
     via_spans: dict[str, int]
     width_lengths_mm: dict[float, float]
+    layer_width_lengths_mm: dict[tuple[str, float], float]
     min_width_mm: float | None
     max_width_mm: float | None
     layers_used: list[str]
@@ -139,6 +140,7 @@ def analyze_net_route(
 
     layer_lengths: dict[str, float] = defaultdict(float)
     width_lengths: dict[float, float] = defaultdict(float)
+    layer_width_lengths: dict[tuple[str, float], float] = defaultdict(float)
     widths: list[float] = []
 
     for idx, track in enumerate(tracks, 1):
@@ -149,6 +151,7 @@ def analyze_net_route(
         length = track.start.distance_to(track.end)
         layer_lengths[track.layer] += length
         width_lengths[track.width] += length
+        layer_width_lengths[(track.layer, track.width)] += length
         widths.append(track.width)
 
     for idx, arc in enumerate(arcs, 1):
@@ -159,6 +162,7 @@ def analyze_net_route(
         length = arc_length(arc)
         layer_lengths[arc.layer] += length
         width_lengths[arc.width] += length
+        layer_width_lengths[(arc.layer, arc.width)] += length
         widths.append(arc.width)
 
     via_spans: dict[str, int] = defaultdict(int)
@@ -236,6 +240,7 @@ def analyze_net_route(
         via_count=len(vias),
         via_spans=dict(sorted(via_spans.items())),
         width_lengths_mm=dict(sorted(width_lengths.items())),
+        layer_width_lengths_mm=dict(sorted(layer_width_lengths.items())),
         min_width_mm=min(widths) if widths else None,
         max_width_mm=max(widths) if widths else None,
         layers_used=layers_used,
